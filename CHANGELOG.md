@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.6.1] — 2026-09-29
+
+### Added
+
+- `--conflict skip|overwrite|rename` to set the conflict strategy in
+  non-interactive mode (previously only editable via the config file/menu).
+- `--json` support for `--history` and `--stats`.
+- `--dry-run` no longer triggers dependency installation in the interactive flows.
+
+### Fixed
+
+- (none yet)
+
 ## [0.6.0] — 2026-09-29
 
 ### Added

@@ -49,6 +49,32 @@ fn cmd(scratch: &Scratch) -> Command {
 }
 
 #[test]
+fn invalid_conflict_strategy_is_a_usage_error() {
+    let s = Scratch::new("conflict");
+    let out = cmd(&s)
+        .args(["--yes", "--conflict", "bogus"])
+        .arg(s.path())
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+}
+
+#[test]
+fn history_and_stats_support_json() {
+    let s = Scratch::new("json");
+    for flag in ["--history", "--stats"] {
+        let out = cmd(&s).args([flag, "--json"]).output().unwrap();
+        assert!(out.status.success(), "{flag} failed");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let trimmed = stdout.trim();
+        assert!(
+            trimmed.starts_with('[') || trimmed.starts_with('{'),
+            "{flag} --json did not emit JSON: {stdout}"
+        );
+    }
+}
+
+#[test]
 fn version_and_help() {
     let s = Scratch::new("help");
     let out = cmd(&s).arg("--version").output().unwrap();

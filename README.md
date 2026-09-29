@@ -116,10 +116,11 @@ rusty-crunch --mode restore
 | `--delete-originals` | Delete originals after a successful conversion. |
 | `--force-recheck` | Re-process files even if previously optimized. |
 | `--quality <low\|medium\|high>` | Output quality for optimize. |
+| `--conflict <skip\|overwrite\|rename>` | How to handle an existing output file (non-interactive). |
 | `--min-size SIZE` / `--max-size SIZE` | Only process files within a size range (e.g. `10MB`, `4GB`). |
 | `--target HEIGHT` / `--preset <anime\|movie>` | Upscale target height / profile. |
 | `--dry-run` | Simulate the run without converting anything. |
-| `--json` | Print the conversion summary as JSON. |
+| `--json` | Machine-readable output (conversion summary, `--history`, `--stats`). |
 | `--no-color` | Disable colored output (also honours `NO_COLOR`). |
 | `--list-formats` | List supported input/output formats and exit. |
 | `--check-update` | Report a newer release without installing it. |

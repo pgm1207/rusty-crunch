@@ -96,6 +96,10 @@ struct Cli {
     #[arg(long, value_name = "PROFILE", value_parser = ["anime", "movie"])]
     preset: Option<String>,
 
+    /// How to handle an existing output file (non-interactive): skip, overwrite, rename
+    #[arg(long, value_name = "STRATEGY", value_parser = ["skip", "overwrite", "rename"])]
+    conflict: Option<String>,
+
     /// Check for a newer release and exit
     #[arg(long = "check-update")]
     check_update: bool,
@@ -166,10 +170,10 @@ fn main() -> Result<()> {
         return self_update_cmd();
     }
     if cli.history {
-        return processor::print_history();
+        return processor::print_history(cli.json);
     }
     if cli.stats {
-        return processor::print_stats();
+        return processor::print_stats(cli.json);
     }
 
     // Non-interactive path: `--yes` (or an explicit `--mode`).
@@ -297,6 +301,12 @@ fn run_noninteractive(cli: &Cli) -> Result<()> {
         cfg.default_recursive
     };
     let delete = cli.delete_originals || cfg.default_delete_originals;
+    let conflict = match cli.conflict.as_deref() {
+        Some("overwrite") => config::ConflictStrategy::Overwrite,
+        Some("rename") => config::ConflictStrategy::Rename,
+        Some("skip") => config::ConflictStrategy::Skip,
+        _ => cfg.conflict_strategy,
+    };
     let quality = match cli.quality.as_deref() {
         Some("low") => processor::Quality::Low,
         Some("medium") => processor::Quality::Medium,
@@ -362,7 +372,7 @@ fn run_noninteractive(cli: &Cli) -> Result<()> {
                 output_subfolder: None,
                 min_file_size: min_size,
                 max_file_size: max_size,
-                conflict_strategy: cfg.conflict_strategy,
+                conflict_strategy: conflict,
                 normalize_audio: false,
                 quality,
                 keep_metadata: true,
@@ -412,7 +422,7 @@ fn run_noninteractive(cli: &Cli) -> Result<()> {
                 output_subfolder: None,
                 min_file_size: min_size,
                 max_file_size: max_size,
-                conflict_strategy: cfg.conflict_strategy,
+                conflict_strategy: conflict,
                 normalize_audio: false,
                 quality,
                 keep_metadata: true,
@@ -566,10 +576,12 @@ fn run_crunch(cli: &Cli, forced_mode: Option<prompt::CrunchMode>) -> Result<()> 
             },
         };
 
-        // Lazy dep install — only if the tool is actually missing
-        if let Err(e) = deps::ensure(media) {
-            println!("\n  {} {}\n", style("✗").red(), style(e).red());
-            continue;
+        // Lazy dep install — only if the tool is actually missing (never on a dry run)
+        if !cli.dry_run {
+            if let Err(e) = deps::ensure(media) {
+                println!("\n  {} {}\n", style("✗").red(), style(e).red());
+                continue;
+            }
         }
 
         let raw_input = match prompt::select_input_format(media)? {
@@ -909,7 +921,9 @@ fn run_recommended_upscale(cli: &Cli) -> Result<()> {
         }
     }
 
-    deps::ensure(formats::MediaType::Video)?;
+    if !cli.dry_run {
+        deps::ensure(formats::MediaType::Video)?;
+    }
 
     let threads = util::active_threads();
     let mut summaries = Vec::new();
@@ -1155,7 +1169,7 @@ fn run_recommended_crunch(cli: &Cli) -> Result<()> {
     // ── Ensure dependencies ─────────────────────────────────────────
     let mut ensured: Vec<formats::MediaType> = Vec::new();
     for &(mt, _, _) in &applicable {
-        if !ensured.contains(&mt) {
+        if !cli.dry_run && !ensured.contains(&mt) {
             deps::ensure(mt)?;
             ensured.push(mt);
         }

@@ -780,8 +780,24 @@ pub fn restore_last_session() -> Result<()> {
     Ok(())
 }
 
+#[derive(Serialize)]
+struct HistorySummary {
+    session_id: u64,
+    created_unix: u64,
+    files_converted: usize,
+    backups: usize,
+    bytes_saved: u64,
+}
+
+#[derive(Serialize)]
+struct StatsSummary {
+    sessions: usize,
+    files_converted: usize,
+    bytes_saved: u64,
+}
+
 /// `--history`: list conversion sessions, newest first.
-pub fn print_history() -> Result<()> {
+pub fn print_history(json: bool) -> Result<()> {
     let dir = history_dir();
     let mut files: Vec<PathBuf> = match std::fs::read_dir(&dir) {
         Ok(rd) => rd
@@ -793,7 +809,26 @@ pub fn print_history() -> Result<()> {
     };
     files.sort();
 
-    if files.is_empty() {
+    let summaries: Vec<HistorySummary> = files
+        .iter()
+        .rev()
+        .filter_map(|p| std::fs::read_to_string(p).ok())
+        .filter_map(|s| serde_json::from_str::<HistoryRecord>(&s).ok())
+        .map(|rec| HistorySummary {
+            session_id: rec.session_id,
+            created_unix: rec.created_unix,
+            files_converted: rec.files_converted,
+            backups: rec.entries.len(),
+            bytes_saved: rec.bytes_saved,
+        })
+        .collect();
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&summaries)?);
+        return Ok(());
+    }
+
+    if summaries.is_empty() {
         println!("\n  {} No conversion history yet.\n", style("⚠").yellow());
         return Ok(());
     }
@@ -801,30 +836,26 @@ pub fn print_history() -> Result<()> {
     println!(
         "\n  {} Conversion history ({} session{})\n",
         style("📜").cyan(),
-        files.len(),
-        if files.len() == 1 { "" } else { "s" },
+        summaries.len(),
+        if summaries.len() == 1 { "" } else { "s" },
     );
-    for path in files.iter().rev() {
-        if let Ok(s) = std::fs::read_to_string(path) {
-            if let Ok(rec) = serde_json::from_str::<HistoryRecord>(&s) {
-                println!(
-                    "  {} session {} — {} converted, {} backup(s), {} saved  {}",
-                    style("•").dim(),
-                    style(rec.session_id).cyan().bold(),
-                    rec.files_converted,
-                    rec.entries.len(),
-                    style(crate::util::human_bytes(rec.bytes_saved)).green(),
-                    style(fmt_unix(rec.created_unix)).dim(),
-                );
-            }
-        }
+    for rec in &summaries {
+        println!(
+            "  {} session {} — {} converted, {} backup(s), {} saved  {}",
+            style("•").dim(),
+            style(rec.session_id).cyan().bold(),
+            rec.files_converted,
+            rec.backups,
+            style(crate::util::human_bytes(rec.bytes_saved)).green(),
+            style(fmt_unix(rec.created_unix)).dim(),
+        );
     }
     println!();
     Ok(())
 }
 
 /// `--stats`: cumulative totals across all recorded sessions.
-pub fn print_stats() -> Result<()> {
+pub fn print_stats(json: bool) -> Result<()> {
     let dir = history_dir();
     let (mut sessions, mut files, mut saved) = (0usize, 0usize, 0u64);
     if let Ok(rd) = std::fs::read_dir(&dir) {
@@ -840,6 +871,16 @@ pub fn print_stats() -> Result<()> {
                 }
             }
         }
+    }
+
+    if json {
+        let summary = StatsSummary {
+            sessions,
+            files_converted: files,
+            bytes_saved: saved,
+        };
+        println!("{}", serde_json::to_string_pretty(&summary)?);
+        return Ok(());
     }
 
     println!("\n  {} Cumulative stats\n", style("📊").cyan());
