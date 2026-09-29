@@ -12,7 +12,10 @@ fn detect_pm() -> Option<PackageManager> {
     #[cfg(target_os = "windows")]
     {
         if util::has("winget") {
-            Some(("winget install --accept-source-agreements --accept-package-agreements", winget_pkg))
+            Some((
+                "winget install --accept-source-agreements --accept-package-agreements",
+                winget_pkg,
+            ))
         } else if util::has("choco") {
             Some(("choco install -y", choco_pkg))
         } else if util::has("scoop") {
@@ -279,16 +282,28 @@ pub fn ensure(media: MediaType) -> Result<()> {
     // Keys here are logical names for the package-map lookup, not binary names.
     let missing: Vec<&'static str> = match media {
         MediaType::Audio | MediaType::Video => {
-            if util::has("ffmpeg") { vec![] } else { vec!["ffmpeg"] }
+            if util::has("ffmpeg") {
+                vec![]
+            } else {
+                vec!["ffmpeg"]
+            }
         }
         MediaType::Images => {
             // On Windows, `convert` is a built-in disk utility — NEVER use it.
-            if util::has_magick() { vec![] } else { vec!["magick"] }
+            if util::has_magick() {
+                vec![]
+            } else {
+                vec!["magick"]
+            }
         }
         MediaType::Documents => {
             let mut m = Vec::new();
-            if !util::has_gs() { m.push("gs"); }
-            if !util::has_lo() { m.push("libreoffice"); }
+            if !util::has_gs() {
+                m.push("gs");
+            }
+            if !util::has_lo() {
+                m.push("libreoffice");
+            }
             m
         }
     };
@@ -356,7 +371,7 @@ pub fn ensure(media: MediaType) -> Result<()> {
         };
 
         for tool in &missing {
-            let pkg = pkg_fn(*tool);
+            let pkg = pkg_fn(tool);
             println!(
                 "  {} Installing {} …",
                 style("📦").cyan(),
@@ -365,9 +380,7 @@ pub fn ensure(media: MediaType) -> Result<()> {
 
             let full = format!("{pm_cmd} {pkg}");
             if !run_install(pm_cmd, pkg)? {
-                bail!(
-                    "Failed to install `{pkg}`. Try running manually:\n  {full}"
-                );
+                bail!("Failed to install `{pkg}`. Try running manually:\n  {full}");
             }
 
             println!(
@@ -386,15 +399,27 @@ pub fn ensure(media: MediaType) -> Result<()> {
     // Verify after install
     let still_missing: Vec<&str> = match media {
         MediaType::Audio | MediaType::Video => {
-            if util::has("ffmpeg") { vec![] } else { vec!["ffmpeg"] }
+            if util::has("ffmpeg") {
+                vec![]
+            } else {
+                vec!["ffmpeg"]
+            }
         }
         MediaType::Images => {
-            if util::has_magick() { vec![] } else { vec!["imagemagick"] }
+            if util::has_magick() {
+                vec![]
+            } else {
+                vec!["imagemagick"]
+            }
         }
         MediaType::Documents => {
             let mut m = Vec::new();
-            if !util::has_gs() { m.push("ghostscript"); }
-            if !util::has_lo() { m.push("libreoffice"); }
+            if !util::has_gs() {
+                m.push("ghostscript");
+            }
+            if !util::has_lo() {
+                m.push("libreoffice");
+            }
             m
         }
     };
@@ -413,7 +438,9 @@ pub fn ensure(media: MediaType) -> Result<()> {
             println!(
                 "  {} {}",
                 style("ℹ").cyan(),
-                style("Please restart rusty-crunch so it can detect the new tools.").white().bold(),
+                style("Please restart rusty-crunch so it can detect the new tools.")
+                    .white()
+                    .bold(),
             );
             println!();
             wait_for_enter();
@@ -448,15 +475,27 @@ fn wait_for_enter() {
 pub fn check(media: MediaType) -> Result<()> {
     let missing: Vec<&'static str> = match media {
         MediaType::Audio | MediaType::Video => {
-            if util::has("ffmpeg") { vec![] } else { vec!["ffmpeg"] }
+            if util::has("ffmpeg") {
+                vec![]
+            } else {
+                vec!["ffmpeg"]
+            }
         }
         MediaType::Images => {
-            if util::has_magick() { vec![] } else { vec!["ImageMagick (magick)"] }
+            if util::has_magick() {
+                vec![]
+            } else {
+                vec!["ImageMagick (magick)"]
+            }
         }
         MediaType::Documents => {
             let mut m = Vec::new();
-            if !util::has_gs() { m.push("Ghostscript (gs)"); }
-            if !util::has_lo() { m.push("LibreOffice"); }
+            if !util::has_gs() {
+                m.push("Ghostscript (gs)");
+            }
+            if !util::has_lo() {
+                m.push("LibreOffice");
+            }
             m
         }
     };
@@ -549,13 +588,14 @@ pub fn clean_installed() -> Result<()> {
 
     type ToolEntry = (&'static str, bool, &'static str);
     let tools: Vec<ToolEntry> = vec![
-        ("ffmpeg",       util::has("ffmpeg"),   "ffmpeg"),
-        ("ImageMagick",  util::has_magick(),    "magick"),
-        ("Ghostscript",  util::has_gs(),        "gs"),
-        ("LibreOffice",  util::has_lo(),        "libreoffice"),
+        ("ffmpeg", util::has("ffmpeg"), "ffmpeg"),
+        ("ImageMagick", util::has_magick(), "magick"),
+        ("Ghostscript", util::has_gs(), "gs"),
+        ("LibreOffice", util::has_lo(), "libreoffice"),
     ];
 
-    let installed: Vec<(&str, &str)> = tools.iter()
+    let installed: Vec<(&str, &str)> = tools
+        .iter()
         .filter(|(_, present, _)| *present)
         .map(|(name, _, pkg)| (*name, *pkg))
         .collect();
@@ -568,7 +608,8 @@ pub fn clean_installed() -> Result<()> {
         return Ok(());
     }
 
-    let display: Vec<String> = installed.iter()
+    let display: Vec<String> = installed
+        .iter()
         .map(|(name, _)| format!("  {name}"))
         .collect();
 
@@ -601,9 +642,17 @@ pub fn clean_installed() -> Result<()> {
             style(name).white().bold(),
         );
         if run_install(&uprefix, pkg_name)? {
-            println!("  {} {} removed", style("\u{2713}").green(), style(name).white());
+            println!(
+                "  {} {} removed",
+                style("\u{2713}").green(),
+                style(name).white()
+            );
         } else {
-            println!("  {} Failed to remove {}", style("\u{2717}").red(), style(name).red());
+            println!(
+                "  {} Failed to remove {}",
+                style("\u{2717}").red(),
+                style(name).red()
+            );
         }
     }
 
@@ -611,5 +660,3 @@ pub fn clean_installed() -> Result<()> {
     println!();
     Ok(())
 }
-
-

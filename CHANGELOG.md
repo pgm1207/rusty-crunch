@@ -2,6 +2,48 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.6.0] — 2026-09-29
+
+### Added
+
+- **Non-interactive mode** — `--yes` (or an explicit `--mode`) runs without any
+  prompt: `--mode optimize|upscale|restore`, `--recursive` / `--no-recursive`,
+  `--delete-originals`, `--force-recheck`, `--quality low|medium|high`,
+  `--target` / `--preset` for upscaling, and `--json` summaries.
+- **`--no-color`** support, plus the `NO_COLOR` convention and automatic
+  color suppression when output is not a TTY.
+- **Checksum-verified self-update** — the release `SHA256SUMS` is downloaded and
+  the artifact is refused on mismatch.
+- Makefile (`make check` / `test` / `lint` / `install` / `package`), a CI
+  workflow, GitHub issue templates, `CONTRIBUTING.md`, `SCOPE.md`, and a man page.
+- `--health-check` now exits non-zero when a required tool is missing.
+
+### Fixed
+
+- **Same-extension conversions (video/images) could read and write the same
+  file.** They now convert to a temporary sibling and swap atomically, matching
+  the existing audio behavior.
+- Update and install URLs pointed at the old repository owner (`pablogonz12`);
+  they now use `pgm1207`.
+- `threads_used` in the JSON summary reported the requested count instead of the
+  actual (video-clamped) count.
+- Older config files missing `default_recursive` / `default_delete_originals` /
+  `default_folder` no longer fail to parse and silently reset.
+- Windows agent liveness check matched PIDs by substring (PID 123 matched 1234);
+  it now matches exactly.
+- Removed an always-failing unit test (`dump_best_encoder`) that made `cargo test`
+  unusable.
+
+### Changed
+
+- Repository hygiene: stopped telling git to ignore `Cargo.lock`, added ignores
+  for build outputs, and removed stale artifacts (`agent.rs.txt`,
+  `rusty-crunch.exe`, `gh.zip`, `gh_cli/`).
+- README rewritten to match the implementation (the old text referenced
+  `DashMap`, `rayon`, and `tracing`, none of which are dependencies).
+
+> Note: releases 0.5.5–0.5.9 were tagged but never recorded here.
+
 ## [0.5.4] — 2026-03-13
 
 ### Added

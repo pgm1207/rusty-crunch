@@ -2,7 +2,7 @@ use crate::config::Config;
 use crate::formats::{self, MediaType};
 use anyhow::Result;
 use console::style;
-use dialoguer::{Confirm, Input, Select, theme::ColorfulTheme};
+use dialoguer::{theme::ColorfulTheme, Confirm, Input, Select};
 use std::path::PathBuf;
 
 fn theme() -> ColorfulTheme {
@@ -165,10 +165,8 @@ fn browse_directory(start: PathBuf) -> Result<Option<PathBuf>> {
             style(current.display()).white().bold(),
         );
 
-        let mut items: Vec<String> = vec![
-            "✓ Use this folder".into(),
-            "📝 Type / paste a path".into(),
-        ];
+        let mut items: Vec<String> =
+            vec!["✓ Use this folder".into(), "📝 Type / paste a path".into()];
 
         // Add parent entry if not at root
         let has_parent = current.parent().is_some();
@@ -225,10 +223,7 @@ fn browse_directory(start: PathBuf) -> Result<Option<PathBuf>> {
                         }
                     }
                     _ => {
-                        println!(
-                            "  {} Not a valid directory",
-                            style("✗").red()
-                        );
+                        println!("  {} Not a valid directory", style("✗").red());
                     }
                 }
             }
@@ -358,7 +353,7 @@ pub fn select_output_destination() -> Result<Option<String>> {
                     style("⚠").yellow()
                 );
             }
-        }
+        },
     }
 }
 
@@ -399,7 +394,6 @@ pub fn confirm_audio_normalization() -> Result<bool> {
     Ok(sel == Some(1))
 }
 
-
 pub fn select_quality() -> Result<crate::processor::Quality> {
     let items = [
         "High (Best quality, larger file)",
@@ -411,7 +405,7 @@ pub fn select_quality() -> Result<crate::processor::Quality> {
         .items(&items)
         .default(1)
         .interact_opt()?;
-        
+
     Ok(match sel {
         Some(0) => crate::processor::Quality::High,
         Some(2) => crate::processor::Quality::Low,
@@ -436,7 +430,7 @@ pub fn select_video_scale() -> Result<crate::processor::VideoScale> {
         .items(&items)
         .default(0)
         .interact_opt()?;
-        
+
     Ok(match sel {
         Some(1) => crate::processor::VideoScale::P1080,
         Some(2) => crate::processor::VideoScale::P720,
@@ -533,7 +527,7 @@ pub fn select_image_scale() -> Result<crate::processor::ImageScale> {
         .items(&items)
         .default(0)
         .interact_opt()?;
-        
+
     Ok(match sel {
         Some(1) => crate::processor::ImageScale::W1920,
         Some(2) => crate::processor::ImageScale::W1080,

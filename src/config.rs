@@ -1,8 +1,8 @@
-use crate::formats::MediaType;
 use crate::deps;
+use crate::formats::MediaType;
 use anyhow::Result;
 use console::style;
-use dialoguer::{Confirm, Input, Select, theme::ColorfulTheme};
+use dialoguer::{theme::ColorfulTheme, Confirm, Input, Select};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -38,9 +38,9 @@ pub enum ThreadMode {
 impl std::fmt::Display for ThreadMode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Full     => write!(f, "Power (100% — all cores)"),
+            Self::Full => write!(f, "Power (100% — all cores)"),
             Self::Balanced => write!(f, "Balanced (50% of cores)"),
-            Self::Saver    => write!(f, "Power saver (25% of cores)"),
+            Self::Saver => write!(f, "Power saver (25% of cores)"),
         }
     }
 }
@@ -48,9 +48,9 @@ impl std::fmt::Display for ThreadMode {
 impl ThreadMode {
     pub fn to_threads(self, total: usize) -> usize {
         match self {
-            Self::Full     => total,
+            Self::Full => total,
             Self::Balanced => (total / 2).max(1),
-            Self::Saver    => total.div_ceil(4),
+            Self::Saver => total.div_ceil(4),
         }
     }
 }
@@ -99,12 +99,19 @@ const fn default_config_version() -> u32 {
     1
 }
 
+const fn default_true() -> bool {
+    true
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Config {
     #[serde(default = "default_config_version")]
     pub config_version: u32,
+    #[serde(default = "default_true")]
     pub default_recursive: bool,
+    #[serde(default)]
     pub default_delete_originals: bool,
+    #[serde(default)]
     pub default_folder: Option<String>,
     #[serde(default)]
     pub display_mode: DisplayMode,
@@ -231,12 +238,11 @@ pub fn edit_settings() -> Result<()> {
         3 => {
             cfg = Config::default();
             save(&cfg)?;
-            println!(
-                "\n  {} Settings reset to defaults\n",
-                style("✓").green(),
-            );
+            println!("\n  {} Settings reset to defaults\n", style("✓").green(),);
             return Ok(());
-        }        4 => return deps::clean_installed(),        _ => return Ok(()),
+        }
+        4 => return deps::clean_installed(),
+        _ => return Ok(()),
     }
 
     cfg.default_recursive = Confirm::with_theme(&theme())
@@ -286,9 +292,9 @@ pub fn edit_settings() -> Result<()> {
         format!("🌿 {}", ThreadMode::Saver),
     ];
     let thread_default = match cfg.thread_mode {
-        ThreadMode::Full     => 0,
+        ThreadMode::Full => 0,
         ThreadMode::Balanced => 1,
-        ThreadMode::Saver    => 2,
+        ThreadMode::Saver => 2,
     };
     let thread_idx = Select::with_theme(&theme())
         .with_prompt("Thread usage")
@@ -315,7 +321,10 @@ pub fn edit_settings() -> Result<()> {
 fn export_settings() -> Result<()> {
     let path = config_path();
     if !path.exists() {
-        println!("  {} No settings file found — using defaults", style("⚠").yellow());
+        println!(
+            "  {} No settings file found — using defaults",
+            style("⚠").yellow()
+        );
         return Ok(());
     }
     let dest: String = Input::with_theme(&theme())
@@ -342,8 +351,8 @@ fn import_settings() -> Result<()> {
     if src.is_empty() {
         return Ok(());
     }
-    let content = std::fs::read_to_string(src)
-        .map_err(|e| anyhow::anyhow!("Cannot read {}: {}", src, e))?;
+    let content =
+        std::fs::read_to_string(src).map_err(|e| anyhow::anyhow!("Cannot read {}: {}", src, e))?;
     // Validate that it parses as a valid Config
     let _: Config = serde_json::from_str(&content)
         .map_err(|e| anyhow::anyhow!("Invalid settings file: {}", e))?;
@@ -473,8 +482,14 @@ mod tests {
     #[test]
     fn test_conflict_strategy_display() {
         assert_eq!(ConflictStrategy::Skip.to_string(), "Skip existing files");
-        assert_eq!(ConflictStrategy::Overwrite.to_string(), "Overwrite existing files");
-        assert_eq!(ConflictStrategy::Rename.to_string(), "Rename with suffix (.1, .2, ...)");
+        assert_eq!(
+            ConflictStrategy::Overwrite.to_string(),
+            "Overwrite existing files"
+        );
+        assert_eq!(
+            ConflictStrategy::Rename.to_string(),
+            "Rename with suffix (.1, .2, ...)"
+        );
     }
 
     #[test]
@@ -492,8 +507,8 @@ mod tests {
         // Test that percentages are correct
         for cores in [1, 2, 4, 8, 16, 32, 64] {
             assert_eq!(ThreadMode::Full.to_threads(cores), cores);
-            assert_eq!(ThreadMode::Balanced.to_threads(cores), (cores + 1) / 2);
-            assert_eq!(ThreadMode::Saver.to_threads(cores), (cores + 3) / 4);
+            assert_eq!(ThreadMode::Balanced.to_threads(cores), cores.div_ceil(2));
+            assert_eq!(ThreadMode::Saver.to_threads(cores), cores.div_ceil(4));
         }
     }
 
@@ -504,7 +519,7 @@ mod tests {
             ConflictStrategy::Overwrite,
             ConflictStrategy::Rename,
         ];
-        
+
         for strategy in &strategies {
             // Each should have a non-empty display string
             let display = strategy.to_string();
@@ -531,7 +546,7 @@ mod tests {
             recursive: true,
             delete_originals: false,
         };
-        
+
         assert_eq!(rule.media_type, crate::formats::MediaType::Audio);
         assert_eq!(rule.input_fmt, "MP3");
         assert_eq!(rule.output_fmt, "FLAC");
@@ -554,7 +569,7 @@ mod tests {
     #[test]
     fn test_config_with_multiple_rules() {
         let mut cfg = Config::default();
-        
+
         // Add multiple rules
         for i in 0..5 {
             cfg.agent_rules.push(AgentRule {
@@ -566,9 +581,9 @@ mod tests {
                 delete_originals: i % 2 == 0,
             });
         }
-        
+
         assert_eq!(cfg.agent_rules.len(), 5);
-        
+
         // Verify all rules are stored correctly
         for (i, rule) in cfg.agent_rules.iter().enumerate() {
             assert_eq!(rule.folder, format!("/folder{}", i));
@@ -606,13 +621,13 @@ mod tests {
             agent_trigger: AgentTrigger::Periodic(600),
             conflict_strategy: ConflictStrategy::Rename,
         };
-        
+
         // Serialize
         let json = serde_json::to_string(&original).unwrap();
-        
+
         // Deserialize
         let restored: Config = serde_json::from_str(&json).unwrap();
-        
+
         // Verify all fields match
         assert_eq!(restored.agent_rules.len(), 2);
         assert_eq!(restored.thread_mode, ThreadMode::Saver);
@@ -629,7 +644,7 @@ mod tests {
             crate::formats::MediaType::Images,
             crate::formats::MediaType::Documents,
         ];
-        
+
         for media_type in &media_types {
             let rule = AgentRule {
                 folder: "/test".to_string(),
@@ -639,7 +654,7 @@ mod tests {
                 recursive: true,
                 delete_originals: false,
             };
-            
+
             assert_eq!(rule.media_type, *media_type);
         }
     }
@@ -652,7 +667,7 @@ mod tests {
             "./current/dir/videos",
             "/path/with spaces/and-dashes_underscores",
         ];
-        
+
         for path_str in paths {
             let rule = AgentRule {
                 folder: path_str.to_string(),
@@ -662,7 +677,7 @@ mod tests {
                 recursive: true,
                 delete_originals: false,
             };
-            
+
             assert_eq!(rule.folder, path_str);
         }
     }
@@ -677,7 +692,7 @@ mod tests {
     fn test_agent_trigger_variants() {
         let watch = AgentTrigger::Watch;
         let periodic = AgentTrigger::Periodic(300);
-        
+
         assert_ne!(watch, periodic);
         assert_eq!(watch, AgentTrigger::Watch);
         assert_eq!(periodic, AgentTrigger::Periodic(300));
@@ -687,20 +702,15 @@ mod tests {
     fn test_config_with_optional_folder() {
         let mut cfg = Config::default();
         assert!(cfg.default_folder.is_none());
-        
+
         cfg.default_folder = Some("/home/user".to_string());
         assert_eq!(cfg.default_folder, Some("/home/user".to_string()));
     }
 
     #[test]
     fn test_agent_rule_flags() {
-        let all_combos = vec![
-            (true, true),
-            (true,false),
-            (false, true),
-            (false, false),
-        ];
-        
+        let all_combos = vec![(true, true), (true, false), (false, true), (false, false)];
+
         for (recursive, delete) in all_combos {
             let rule = AgentRule {
                 folder: "/test".to_string(),
@@ -710,7 +720,7 @@ mod tests {
                 recursive,
                 delete_originals: delete,
             };
-            
+
             assert_eq!(rule.recursive, recursive);
             assert_eq!(rule.delete_originals, delete);
         }

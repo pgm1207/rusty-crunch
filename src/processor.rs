@@ -3,8 +3,8 @@ use crate::formats::MediaType;
 use crate::util;
 use anyhow::Result;
 use console::style;
-use indicatif::{ProgressBar, ProgressStyle};
 use futures::StreamExt;
+use indicatif::{ProgressBar, ProgressStyle};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 #[cfg(not(target_os = "windows"))]
@@ -15,19 +15,28 @@ use std::sync::Mutex;
 use std::time::{Instant, SystemTime};
 use walkdir::WalkDir;
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Quality {
+    High,
+    Medium,
+    Low,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub enum Quality { High, Medium, Low }
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum UpscalePreset { Anime, Movie }
+pub enum UpscalePreset {
+    Anime,
+    Movie,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum VideoScale {
     Original,
     P1080,
     P720,
-    AutoTarget { target_height: u32, preset: UpscalePreset },
+    AutoTarget {
+        target_height: u32,
+        preset: UpscalePreset,
+    },
     Upscale2xAnime,
     Upscale3xAnime,
     Upscale4xAnime,
@@ -37,7 +46,11 @@ pub enum VideoScale {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub enum ImageScale { Original, W1920, W1080 }
+pub enum ImageScale {
+    Original,
+    W1920,
+    W1080,
+}
 
 pub struct Job<'a> {
     pub folder: &'a Path,
@@ -98,7 +111,11 @@ pub fn run(job: &Job) -> Result<ConversionSummary> {
     }
 
     // ── Load optimization cache (for same-extension jobs like PDF → PDF) ──
-    let cache = Mutex::new(if same_ext { load_opt_cache() } else { HashMap::new() });
+    let cache = Mutex::new(if same_ext {
+        load_opt_cache()
+    } else {
+        HashMap::new()
+    });
 
     // Session history for restore/undo functionality.
     let session_id = SystemTime::now()
@@ -174,11 +191,12 @@ pub fn run(job: &Job) -> Result<ConversionSummary> {
     let _cores = util::cores();
 
     // ── Estimate output size and check disk space (preflight warning) ─
-    let total_input_bytes: u64 = files.iter()
+    let total_input_bytes: u64 = files
+        .iter()
         .filter_map(|f| f.metadata().ok())
         .map(|m| m.len())
         .sum();
-    
+
     if !job.dry_run && !job.delete_originals {
         // Estimate output size as 50% of input (rough average for all formats)
         let estimated_output = (total_input_bytes as f64 * 0.5) as u64;
@@ -250,13 +268,13 @@ pub fn run(job: &Job) -> Result<ConversionSummary> {
     );
     pb.enable_steady_tick(std::time::Duration::from_millis(80));
 
-    let ok_count    = AtomicUsize::new(0);
-    let skip_count  = AtomicUsize::new(0);
-    let err_count   = AtomicUsize::new(0);
+    let ok_count = AtomicUsize::new(0);
+    let skip_count = AtomicUsize::new(0);
+    let err_count = AtomicUsize::new(0);
     let del_err_count = AtomicUsize::new(0);
     let saved_bytes = AtomicU64::new(0);
     // Track best/worst compression ratios
-    let best_ratio = AtomicU64::new(0);     // stored as ratio * 10000 (fixed point)
+    let best_ratio = AtomicU64::new(0); // stored as ratio * 10000 (fixed point)
     let worst_ratio = AtomicU64::new(10000); // 100% = no savings (worst possible)
     let start = Instant::now();
 
@@ -268,213 +286,235 @@ pub fn run(job: &Job) -> Result<ConversionSummary> {
         .unwrap();
 
     rt.block_on(async {
-        futures::stream::iter(files).for_each_concurrent(actual_threads, |input_path| {
-            let output_ext = output_ext.clone();
-            let pb = pb.clone();
-            let cache = &cache;
-            let skip_count = &skip_count;
-            let ok_count = &ok_count;
-            let err_count = &err_count;
-            let del_err_count = &del_err_count;
-            let saved_bytes = &saved_bytes;
-            let best_ratio = &best_ratio;
-            let worst_ratio = &worst_ratio;
-            let history_entries = &history_entries;
-            let backup_counter = &backup_counter;
-            async move {
-        // Compute output path (respects optional sub-folder and preserves relative structure)
-        let output_path = if let Some(sub) = job.output_subfolder {
-            // Preserve relative directory structure under the subfolder
-            // e.g., for recursive jobs: input a/b/file.wav → output/a/b/file.ext
-            // for non-recursive: input file.wav → output/file.ext
-            if let Ok(rel_path) = input_path.strip_prefix(job.folder) {
-                // Get parent directory of relative path (if nested)
-                if let Some(parent) = rel_path.parent() {
-                    job.folder
-                        .join(sub)
-                        .join(parent)
-                        .join(input_path.file_name().unwrap_or_default())
-                        .with_extension(&output_ext)
-                } else {
-                    // File is directly in job.folder (non-nested)
-                    job.folder
-                        .join(sub)
-                        .join(input_path.file_name().unwrap_or_default())
-                        .with_extension(&output_ext)
-                }
-            } else {
-                // Fallback: just use filename (shouldn't happen if walkdir is working correctly)
-                job.folder
-                    .join(sub)
-                    .join(input_path.file_name().unwrap_or_default())
-                    .with_extension(&output_ext)
-            }
-        } else {
-            input_path.with_extension(&output_ext)
-        };
-
-        // Ensure parent directory exists for nested outputs
-        if let Some(parent) = output_path.parent() {
-            if !parent.exists() {
-                let _ = std::fs::create_dir_all(parent);
-            }
-        }
-
-        let mut final_output_path = output_path;
-
-        let is_inplace_intent = same_ext && final_output_path == input_path && job.delete_originals;
-
-        // Handle conflicts if output already exists (unless it's an intended in-place replacement)
-        if !is_inplace_intent && final_output_path.exists() {
-            // For same extension workflows (like MKV->MKV upscale), if the output exactly equals the input
-            // but we aren't doing in-place replacement, we MUST force a rename so we don't accidentally skip or overwrite the source.
-            let strategy = if same_ext && final_output_path == input_path {
-                crate::config::ConflictStrategy::Rename
-            } else {
-                job.conflict_strategy
-            };
-
-            match strategy {
-                crate::config::ConflictStrategy::Skip => {
-                    skip_count.fetch_add(1, Ordering::Relaxed);
-                    pb.inc(1);
-                    return;
-                }
-                crate::config::ConflictStrategy::Overwrite => {
-                    // Do nothing, file will be overwritten by converter
-                }
-                crate::config::ConflictStrategy::Rename => {
-                    let mut counter = 1;
-                    let file_stem = final_output_path.file_stem().unwrap_or_default().to_string_lossy().to_string();
-                    let folder = final_output_path.parent().unwrap_or_else(|| std::path::Path::new(""));
-                    loop {
-                        let new_name = format!("{}.{}.{}", file_stem, counter, output_ext);
-                        let candidate = folder.join(new_name);
-                        if !candidate.exists() {
-                            final_output_path = candidate;
-                            break;
+        futures::stream::iter(files)
+            .for_each_concurrent(actual_threads, |input_path| {
+                let output_ext = output_ext.clone();
+                let pb = pb.clone();
+                let cache = &cache;
+                let skip_count = &skip_count;
+                let ok_count = &ok_count;
+                let err_count = &err_count;
+                let del_err_count = &del_err_count;
+                let saved_bytes = &saved_bytes;
+                let best_ratio = &best_ratio;
+                let worst_ratio = &worst_ratio;
+                let history_entries = &history_entries;
+                let backup_counter = &backup_counter;
+                async move {
+                    // Compute output path (respects optional sub-folder and preserves relative structure)
+                    let output_path = if let Some(sub) = job.output_subfolder {
+                        // Preserve relative directory structure under the subfolder
+                        // e.g., for recursive jobs: input a/b/file.wav → output/a/b/file.ext
+                        // for non-recursive: input file.wav → output/file.ext
+                        if let Ok(rel_path) = input_path.strip_prefix(job.folder) {
+                            // Get parent directory of relative path (if nested)
+                            if let Some(parent) = rel_path.parent() {
+                                job.folder
+                                    .join(sub)
+                                    .join(parent)
+                                    .join(input_path.file_name().unwrap_or_default())
+                                    .with_extension(&output_ext)
+                            } else {
+                                // File is directly in job.folder (non-nested)
+                                job.folder
+                                    .join(sub)
+                                    .join(input_path.file_name().unwrap_or_default())
+                                    .with_extension(&output_ext)
+                            }
+                        } else {
+                            // Fallback: just use filename (shouldn't happen if walkdir is working correctly)
+                            job.folder
+                                .join(sub)
+                                .join(input_path.file_name().unwrap_or_default())
+                                .with_extension(&output_ext)
                         }
-                        counter += 1;
-                    }
-                }
-            }
-        }
+                    } else {
+                        input_path.with_extension(&output_ext)
+                    };
 
-        // Skip files already optimized (same-extension jobs like PDF → PDF)
-        if same_ext && !job.force_recheck {
-            if let Some(entry) = cache
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .get(&input_path)
-            {
-                if entry.matches(&input_path) {
-                    skip_count.fetch_add(1, Ordering::Relaxed);
-                    pb.inc(1);
-                    return;
-                }
-            }
-        }
-
-        let name = input_path
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy();
-        pb.set_message(name.to_string());
-
-        let input_size = input_path.metadata().map(|m| m.len()).unwrap_or(0);
-
-        match converter::convert(&input_path,
-            &final_output_path,
-            crate::converter::ConversionOptions {
-                media_type: job.media_type,
-                input_fmt: job.input_fmt,
-                output_fmt: job.output_fmt,
-                normalize_audio: job.normalize_audio,
-                quality: job.quality,
-                keep_metadata: job.keep_metadata,
-                video_scale: job.video_scale,
-                image_scale: job.image_scale,
-            }
-        ).await {
-            Ok(()) => {
-                let output_size = final_output_path.metadata().map(|m| m.len()).unwrap_or(0);
-                if input_size > 0 {
-                    let saved = input_size.saturating_sub(output_size);
-                    saved_bytes.fetch_add(saved, Ordering::Relaxed);
-
-                    // Compression ratio: % of space saved (higher = better)
-                    let ratio = ((saved as f64 / input_size as f64) * 10000.0) as u64;
-                    // Update best (max saved %)
-                    let mut cur = best_ratio.load(Ordering::Relaxed);
-                    while ratio > cur {
-                        match best_ratio.compare_exchange_weak(cur, ratio, Ordering::Relaxed, Ordering::Relaxed) {
-                            Ok(_) => break,
-                            Err(c) => cur = c,
+                    // Ensure parent directory exists for nested outputs
+                    if let Some(parent) = output_path.parent() {
+                        if !parent.exists() {
+                            let _ = std::fs::create_dir_all(parent);
                         }
                     }
-                    // Update worst (min saved %)
-                    cur = worst_ratio.load(Ordering::Relaxed);
-                    while ratio < cur {
-                        match worst_ratio.compare_exchange_weak(cur, ratio, Ordering::Relaxed, Ordering::Relaxed) {
-                            Ok(_) => break,
-                            Err(c) => cur = c,
+
+                    let mut final_output_path = output_path;
+
+                    let is_inplace_intent =
+                        same_ext && final_output_path == input_path && job.delete_originals;
+
+                    // Handle conflicts if output already exists (unless it's an intended in-place replacement)
+                    if !is_inplace_intent && final_output_path.exists() {
+                        // For same extension workflows (like MKV->MKV upscale), if the output exactly equals the input
+                        // but we aren't doing in-place replacement, we MUST force a rename so we don't accidentally skip or overwrite the source.
+                        let strategy = if same_ext && final_output_path == input_path {
+                            crate::config::ConflictStrategy::Rename
+                        } else {
+                            job.conflict_strategy
+                        };
+
+                        match strategy {
+                            crate::config::ConflictStrategy::Skip => {
+                                skip_count.fetch_add(1, Ordering::Relaxed);
+                                pb.inc(1);
+                                return;
+                            }
+                            crate::config::ConflictStrategy::Overwrite => {
+                                // Do nothing, file will be overwritten by converter
+                            }
+                            crate::config::ConflictStrategy::Rename => {
+                                let mut counter = 1;
+                                let file_stem = final_output_path
+                                    .file_stem()
+                                    .unwrap_or_default()
+                                    .to_string_lossy()
+                                    .to_string();
+                                let folder = final_output_path
+                                    .parent()
+                                    .unwrap_or_else(|| std::path::Path::new(""));
+                                loop {
+                                    let new_name =
+                                        format!("{}.{}.{}", file_stem, counter, output_ext);
+                                    let candidate = folder.join(new_name);
+                                    if !candidate.exists() {
+                                        final_output_path = candidate;
+                                        break;
+                                    }
+                                    counter += 1;
+                                }
+                            }
                         }
                     }
-                }
 
-                let mut backup_path: Option<PathBuf> = None;
-                if job.delete_originals && !same_ext {
-                    let idx = backup_counter.fetch_add(1, Ordering::Relaxed);
-                    match backup_original_for_restore(&input_path, session_id, idx) {
-                        Ok(p) => backup_path = Some(p),
-                        Err(_) => {
-                            del_err_count.fetch_add(1, Ordering::Relaxed);
-                        }
-                    }
-                }
-
-                if !same_ext {
-                    history_entries
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .push(HistoryEntry {
-                            original_path: input_path.clone(),
-                            converted_path: final_output_path.clone(),
-                            backup_path,
-                        });
-                }
-
-                // Record file state so we skip it on future runs
-                if same_ext {
-                    if let Some(stamp) = CacheEntry::from_path(&input_path) {
-                        cache
+                    // Skip files already optimized (same-extension jobs like PDF → PDF)
+                    if same_ext && !job.force_recheck {
+                        if let Some(entry) = cache
                             .lock()
                             .unwrap_or_else(|e| e.into_inner())
-                            .insert(input_path.to_path_buf(), stamp);
+                            .get(&input_path)
+                        {
+                            if entry.matches(&input_path) {
+                                skip_count.fetch_add(1, Ordering::Relaxed);
+                                pb.inc(1);
+                                return;
+                            }
+                        }
                     }
-                }
 
-                ok_count.fetch_add(1, Ordering::Relaxed);
-            }
-            Err(e) => {
-                pb.suspend(|| {
-                    eprintln!(
-                        "  {} {}: {}",
-                        style("✗").red().bold(),
-                        style(name.as_ref()).dim(),
-                        style(e).red()
-                    );
-                });
-                // Clean up partial output (but not for in-place where output IS the input)
-                if !same_ext {
-                    let _ = std::fs::remove_file(&final_output_path);
-                }
-                err_count.fetch_add(1, Ordering::Relaxed);
-            }
-        }
+                    let name = input_path.file_name().unwrap_or_default().to_string_lossy();
+                    pb.set_message(name.to_string());
 
-        pb.inc(1);
-    } }).await;
+                    let input_size = input_path.metadata().map(|m| m.len()).unwrap_or(0);
+
+                    match converter::convert(
+                        &input_path,
+                        &final_output_path,
+                        crate::converter::ConversionOptions {
+                            media_type: job.media_type,
+                            input_fmt: job.input_fmt,
+                            output_fmt: job.output_fmt,
+                            normalize_audio: job.normalize_audio,
+                            quality: job.quality,
+                            keep_metadata: job.keep_metadata,
+                            video_scale: job.video_scale,
+                            image_scale: job.image_scale,
+                        },
+                    )
+                    .await
+                    {
+                        Ok(()) => {
+                            let output_size =
+                                final_output_path.metadata().map(|m| m.len()).unwrap_or(0);
+                            if input_size > 0 {
+                                let saved = input_size.saturating_sub(output_size);
+                                saved_bytes.fetch_add(saved, Ordering::Relaxed);
+
+                                // Compression ratio: % of space saved (higher = better)
+                                let ratio = ((saved as f64 / input_size as f64) * 10000.0) as u64;
+                                // Update best (max saved %)
+                                let mut cur = best_ratio.load(Ordering::Relaxed);
+                                while ratio > cur {
+                                    match best_ratio.compare_exchange_weak(
+                                        cur,
+                                        ratio,
+                                        Ordering::Relaxed,
+                                        Ordering::Relaxed,
+                                    ) {
+                                        Ok(_) => break,
+                                        Err(c) => cur = c,
+                                    }
+                                }
+                                // Update worst (min saved %)
+                                cur = worst_ratio.load(Ordering::Relaxed);
+                                while ratio < cur {
+                                    match worst_ratio.compare_exchange_weak(
+                                        cur,
+                                        ratio,
+                                        Ordering::Relaxed,
+                                        Ordering::Relaxed,
+                                    ) {
+                                        Ok(_) => break,
+                                        Err(c) => cur = c,
+                                    }
+                                }
+                            }
+
+                            let mut backup_path: Option<PathBuf> = None;
+                            if job.delete_originals && !same_ext {
+                                let idx = backup_counter.fetch_add(1, Ordering::Relaxed);
+                                match backup_original_for_restore(&input_path, session_id, idx) {
+                                    Ok(p) => backup_path = Some(p),
+                                    Err(_) => {
+                                        del_err_count.fetch_add(1, Ordering::Relaxed);
+                                    }
+                                }
+                            }
+
+                            if !same_ext {
+                                history_entries
+                                    .lock()
+                                    .unwrap_or_else(|e| e.into_inner())
+                                    .push(HistoryEntry {
+                                        original_path: input_path.clone(),
+                                        converted_path: final_output_path.clone(),
+                                        backup_path,
+                                    });
+                            }
+
+                            // Record file state so we skip it on future runs
+                            if same_ext {
+                                if let Some(stamp) = CacheEntry::from_path(&input_path) {
+                                    cache
+                                        .lock()
+                                        .unwrap_or_else(|e| e.into_inner())
+                                        .insert(input_path.to_path_buf(), stamp);
+                                }
+                            }
+
+                            ok_count.fetch_add(1, Ordering::Relaxed);
+                        }
+                        Err(e) => {
+                            pb.suspend(|| {
+                                eprintln!(
+                                    "  {} {}: {}",
+                                    style("✗").red().bold(),
+                                    style(name.as_ref()).dim(),
+                                    style(e).red()
+                                );
+                            });
+                            // Clean up partial output (but not for in-place where output IS the input)
+                            if !same_ext {
+                                let _ = std::fs::remove_file(&final_output_path);
+                            }
+                            err_count.fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
+
+                    pb.inc(1);
+                }
+            })
+            .await;
     });
 
     pb.finish_and_clear();
@@ -574,9 +614,13 @@ pub fn run(job: &Job) -> Result<ConversionSummary> {
         bytes_saved: saved,
         delete_errors: del_errs,
         duration_secs: elapsed.as_secs_f64(),
-        threads_used: job.threads,
+        threads_used: actual_threads,
         compression_best_percent: best as f64 / 100.0,
-        compression_worst_percent: if worst == 10000 { 0.0 } else { worst as f64 / 100.0 },
+        compression_worst_percent: if worst == 10000 {
+            0.0
+        } else {
+            worst as f64 / 100.0
+        },
     })
 }
 
@@ -655,7 +699,10 @@ fn backup_original_for_restore(original: &Path, session_id: u64, idx: usize) -> 
 
 pub fn restore_last_session() -> Result<()> {
     let Some(path) = latest_history_file() else {
-        println!("\n  {} No previous conversion history found.", style("⚠").yellow());
+        println!(
+            "\n  {} No previous conversion history found.",
+            style("⚠").yellow()
+        );
         return Ok(());
     };
 
@@ -721,7 +768,7 @@ fn check_available_space(_folder: &Path, _required_bytes: u64) -> bool {
         }
 
         let available = (stat.f_bavail as u128).saturating_mul(stat.f_frsize as u128);
-        return available >= _required_bytes as u128;
+        available >= _required_bytes as u128
     }
 
     #[cfg(not(unix))]
@@ -749,7 +796,10 @@ impl CacheEntry {
             .duration_since(SystemTime::UNIX_EPOCH)
             .ok()?
             .as_secs();
-        Some(Self { size: meta.len(), modified })
+        Some(Self {
+            size: meta.len(),
+            modified,
+        })
     }
 
     fn matches(&self, path: &Path) -> bool {
@@ -801,12 +851,12 @@ pub fn has_matching_files(folder: &Path, input_fmt: &str, recursive: bool) -> bo
                         lc == input_ext.as_str()
                             || (input_ext == "jpeg" && lc == "jpg")
                             || (input_ext == "jpg" && lc == "jpeg")
-                        || (input_ext == "aiff" && lc == "aif")
-                        || (input_ext == "aif" && lc == "aiff")
-                        || (input_ext == "aiff" && lc == "aif")
-                        || (input_ext == "aif" && lc == "aiff")
-                        || (input_ext == "aiff" && lc == "aif")
-                        || (input_ext == "aif" && lc == "aiff")
+                            || (input_ext == "aiff" && lc == "aif")
+                            || (input_ext == "aif" && lc == "aiff")
+                            || (input_ext == "aiff" && lc == "aif")
+                            || (input_ext == "aif" && lc == "aiff")
+                            || (input_ext == "aiff" && lc == "aif")
+                            || (input_ext == "aif" && lc == "aiff")
                     })
                     .unwrap_or(false)
         })
@@ -829,10 +879,17 @@ mod tests {
 
         // Modify the file → entry should no longer match
         std::thread::sleep(std::time::Duration::from_millis(1100)); // ensure mtime changes
-        let mut f = std::fs::OpenOptions::new().write(true).truncate(true).open(&path).unwrap();
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open(&path)
+            .unwrap();
         f.write_all(b"modified content").unwrap();
         drop(f);
-        assert!(!entry.matches(&path), "entry should NOT match modified file");
+        assert!(
+            !entry.matches(&path),
+            "entry should NOT match modified file"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -840,8 +897,20 @@ mod tests {
     #[test]
     fn cache_roundtrip_serialize() {
         let mut cache = HashMap::new();
-        cache.insert(PathBuf::from("/tmp/a.pdf"), CacheEntry { size: 100, modified: 1234567890 });
-        cache.insert(PathBuf::from("/tmp/b.pdf"), CacheEntry { size: 200, modified: 9876543210 });
+        cache.insert(
+            PathBuf::from("/tmp/a.pdf"),
+            CacheEntry {
+                size: 100,
+                modified: 1234567890,
+            },
+        );
+        cache.insert(
+            PathBuf::from("/tmp/b.pdf"),
+            CacheEntry {
+                size: 200,
+                modified: 9876543210,
+            },
+        );
 
         let json = serde_json::to_string(&cache).unwrap();
         let loaded: HashMap<PathBuf, CacheEntry> = serde_json::from_str(&json).unwrap();
@@ -855,18 +924,18 @@ mod tests {
     fn cache_entry_size_tracking() {
         let dir = std::env::temp_dir().join("rc_cache_size_test");
         let _ = std::fs::create_dir_all(&dir);
-        
+
         // Create files of different sizes
-        let sizes = vec![100, 1000, 10000, 1000000];
+        let sizes = [100, 1000, 10000, 1000000];
         for (i, size) in sizes.iter().enumerate() {
             let path = dir.join(format!("file{}.dat", i));
             let data = vec![0u8; *size];
             std::fs::write(&path, data).unwrap();
-            
+
             let entry = CacheEntry::from_path(&path).unwrap();
             assert_eq!(entry.size, *size as u64);
         }
-        
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -875,20 +944,20 @@ mod tests {
         let dir = std::env::temp_dir().join("rc_cache_mtime_test");
         let _ = std::fs::create_dir_all(&dir);
         let path = dir.join("timetest.txt");
-        
+
         std::fs::write(&path, b"original").unwrap();
         let entry1 = CacheEntry::from_path(&path).unwrap();
-        
+
         // Wait and modify
         std::thread::sleep(std::time::Duration::from_millis(100));
         std::fs::write(&path, b"modified").unwrap();
         let entry2 = CacheEntry::from_path(&path).unwrap();
-        
+
         // Modified times should differ (usually)
         // Note: might be equal on fast filesystems, so we just check they have some value
         assert!(entry1.modified > 0);
         assert!(entry2.modified > 0);
-        
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -896,7 +965,7 @@ mod tests {
     fn cache_empty_operations() {
         let cache: HashMap<PathBuf, CacheEntry> = HashMap::new();
         assert!(cache.is_empty());
-        
+
         // Serialization of empty cache should work
         let json = serde_json::to_string(&cache).unwrap();
         let restored: HashMap<PathBuf, CacheEntry> = serde_json::from_str(&json).unwrap();
@@ -906,7 +975,7 @@ mod tests {
     #[test]
     fn cache_large_number_of_entries() {
         let mut cache = HashMap::new();
-        
+
         // Add many entries
         for i in 0..1000 {
             cache.insert(
@@ -917,15 +986,18 @@ mod tests {
                 },
             );
         }
-        
+
         assert_eq!(cache.len(), 1000);
-        
+
         // Verify serialization works with large cache
         let json = serde_json::to_string(&cache).unwrap();
         let restored: HashMap<PathBuf, CacheEntry> = serde_json::from_str(&json).unwrap();
-        
+
         assert_eq!(restored.len(), 1000);
-        assert_eq!(restored[&PathBuf::from("/path/file999.bin")].size, 999 * 1024);
+        assert_eq!(
+            restored[&PathBuf::from("/path/file999.bin")].size,
+            999 * 1024
+        );
     }
 
     #[test]
@@ -933,15 +1005,15 @@ mod tests {
         let dir = std::env::temp_dir().join("rc_cache_same_test");
         let _ = std::fs::create_dir_all(&dir);
         let path = dir.join("file.txt");
-        
+
         std::fs::write(&path, b"content").unwrap();
         let entry1 = CacheEntry::from_path(&path).unwrap();
         let entry2 = CacheEntry::from_path(&path).unwrap();
-        
+
         // Same file read twice should create equivalent entries
         assert_eq!(entry1.size, entry2.size);
         assert_eq!(entry1.modified, entry2.modified);
-        
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -961,7 +1033,7 @@ mod tests {
             compression_best_percent: 45.0,
             compression_worst_percent: 95.0,
         };
-        
+
         assert_eq!(summary.files_converted, 10);
         assert_eq!(summary.files_skipped, 5);
         assert_eq!(summary.files_failed, 2);
@@ -984,10 +1056,10 @@ mod tests {
             compression_best_percent: 50.0,
             compression_worst_percent: 80.0,
         };
-        
+
         let json = serde_json::to_string(&summary).unwrap();
         let restored: ConversionSummary = serde_json::from_str(&json).unwrap();
-        
+
         assert_eq!(restored.media_type, "Video");
         assert_eq!(restored.input_format, "AVI");
         assert_eq!(restored.output_format, "MKV");
@@ -999,7 +1071,7 @@ mod tests {
     fn cache_entry_various_paths() {
         let dir = std::env::temp_dir().join("rc_cache_paths_test");
         let _ = std::fs::create_dir_all(&dir);
-        
+
         let paths = vec![
             "simple.txt",
             "file with spaces.txt",
@@ -1007,15 +1079,15 @@ mod tests {
             "file_with_underscores.txt",
             "файл.txt", // Unicode filename
         ];
-        
+
         for filename in paths {
             let path = dir.join(filename);
             std::fs::write(&path, b"test content").unwrap();
-            
+
             let entry = CacheEntry::from_path(&path).unwrap();
             assert!(entry.matches(&path));
         }
-        
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1024,18 +1096,13 @@ mod tests {
         let dir = std::env::temp_dir().join("rc_cache_empty_test");
         let _ = std::fs::create_dir_all(&dir);
         let path = dir.join("empty.txt");
-        
+
         // Create zero-byte file
         std::fs::write(&path, b"").unwrap();
-        
+
         let entry = CacheEntry::from_path(&path).unwrap();
         assert_eq!(entry.size, 0);
-        
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
-
-
-
-
-

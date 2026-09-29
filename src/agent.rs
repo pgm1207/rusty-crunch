@@ -6,8 +6,8 @@ use crate::prompt;
 use crate::util;
 use anyhow::{Context, Result};
 use console::style;
-use dialoguer::{Input, Select, theme::ColorfulTheme};
-use notify::{RecursiveMode, RecommendedWatcher, Watcher};
+use dialoguer::{theme::ColorfulTheme, Input, Select};
+use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -52,7 +52,10 @@ extern "C" fn sigterm_handler(_: libc::c_int) {
 #[cfg(unix)]
 fn install_sigterm_handler() {
     unsafe {
-        libc::signal(libc::SIGTERM, sigterm_handler as *const () as libc::sighandler_t);
+        libc::signal(
+            libc::SIGTERM,
+            sigterm_handler as *const () as libc::sighandler_t,
+        );
     }
 }
 
@@ -98,12 +101,19 @@ fn is_process_alive(pid: u32) -> bool {
 
 #[cfg(windows)]
 fn is_process_alive(pid: u32) -> bool {
+    let want = pid.to_string();
     Command::new("tasklist")
         .args(["/FI", &format!("PID eq {}", pid), "/NH"])
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).contains(&pid.to_string()))
+        .map(|o| {
+            // Match the PID as an exact whitespace-delimited token, so that
+            // e.g. PID 123 does not match a process with PID 1234.
+            String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .any(|line| line.split_whitespace().any(|tok| tok == want))
+        })
         .unwrap_or(false)
 }
 
@@ -134,8 +144,8 @@ fn kill_process(_pid: u32) -> bool {
 }
 
 fn spawn_background() -> Result<u32> {
-    let exe = std::env::current_exe()
-        .context("Could not determine rusty-crunch executable path")?;
+    let exe =
+        std::env::current_exe().context("Could not determine rusty-crunch executable path")?;
     let log_path = log_file_path();
     if let Some(dir) = log_path.parent() {
         std::fs::create_dir_all(dir)?;
@@ -253,11 +263,7 @@ pub fn stop_background() -> Result<()> {
         Some(pid) if is_process_alive(pid) => {
             if kill_process(pid) {
                 remove_pid_file();
-                println!(
-                    "  {} Agent stopped (was PID {})",
-                    style("✓").green(),
-                    pid,
-                );
+                println!("  {} Agent stopped (was PID {})", style("✓").green(), pid,);
             } else {
                 println!(
                     "  {} Could not stop agent (PID {})",
@@ -292,11 +298,7 @@ pub fn show_status() -> Result<()> {
             );
             let log = log_file_path();
             if log.exists() {
-                println!(
-                    "  {} Log: {}",
-                    style("┃").dim(),
-                    style(log.display()).dim(),
-                );
+                println!("  {} Log: {}", style("┃").dim(), style(log.display()).dim(),);
             }
         }
         Some(pid) => {
@@ -527,10 +529,7 @@ fn configure_trigger(cfg: &config::Config) -> Result<Option<AgentTrigger>> {
             match input.trim().parse::<u64>() {
                 Ok(mins) if mins >= 1 => return Ok(Some(AgentTrigger::Periodic(mins * 60))),
                 _ => {
-                    println!(
-                        "  {} Enter a valid integer >= 1",
-                        style("✗").red()
-                    );
+                    println!("  {} Enter a valid integer >= 1", style("✗").red());
                 }
             }
         },
@@ -594,11 +593,7 @@ fn start(cfg: &config::Config) -> Result<()> {
             AgentTrigger::Periodic(s) => format!("every {} min", s / 60),
         },
     );
-    println!(
-        "  {} Log: {}",
-        style("┃").dim(),
-        style(log.display()).dim(),
-    );
+    println!("  {} Log: {}", style("┃").dim(), style(log.display()).dim(),);
     println!(
         "  {} Stop:   {}",
         style("┃").dim(),
@@ -720,7 +715,11 @@ fn run_watch(rules: &[AgentRule], rt: &tokio::runtime::Runtime) -> Result<()> {
 
 // ── Periodic Mode ───────────────────────────────────────────────────────
 
-fn run_periodic(rules: &[AgentRule], interval_secs: u64, rt: &tokio::runtime::Runtime) -> Result<()> {
+fn run_periodic(
+    rules: &[AgentRule],
+    interval_secs: u64,
+    rt: &tokio::runtime::Runtime,
+) -> Result<()> {
     let interval = interval_secs.max(60); // minimum 1 minute
     let mut processed: HashSet<PathBuf> = HashSet::new();
 
@@ -749,7 +748,11 @@ fn run_periodic(rules: &[AgentRule], interval_secs: u64, rt: &tokio::runtime::Ru
 
 // ── Shared helpers ──────────────────────────────────────────────────────
 
-fn scan_and_convert(rules: &[AgentRule], processed: &mut HashSet<PathBuf>, rt: &tokio::runtime::Runtime) -> usize {
+fn scan_and_convert(
+    rules: &[AgentRule],
+    processed: &mut HashSet<PathBuf>,
+    rt: &tokio::runtime::Runtime,
+) -> usize {
     let mut count = 0;
     for rule in rules {
         let folder = Path::new(&rule.folder);
@@ -779,12 +782,12 @@ fn scan_and_convert(rules: &[AgentRule], processed: &mut HashSet<PathBuf>, rt: &
                         lc == input_ext
                             || (input_ext == "jpeg" && lc == "jpg")
                             || (input_ext == "jpg" && lc == "jpeg")
-                        || (input_ext == "aiff" && lc == "aif")
-                        || (input_ext == "aif" && lc == "aiff")
-                        || (input_ext == "aiff" && lc == "aif")
-                        || (input_ext == "aif" && lc == "aiff")
-                        || (input_ext == "aiff" && lc == "aif")
-                        || (input_ext == "aif" && lc == "aiff")
+                            || (input_ext == "aiff" && lc == "aif")
+                            || (input_ext == "aif" && lc == "aiff")
+                            || (input_ext == "aiff" && lc == "aif")
+                            || (input_ext == "aif" && lc == "aiff")
+                            || (input_ext == "aiff" && lc == "aif")
+                            || (input_ext == "aif" && lc == "aiff")
                     })
                     .unwrap_or(false)
             })
@@ -827,12 +830,12 @@ fn matches_rule(path: &Path, rule: &AgentRule) -> bool {
             lc == input_ext
                 || (input_ext == "jpeg" && lc == "jpg")
                 || (input_ext == "jpg" && lc == "jpeg")
-                        || (input_ext == "aiff" && lc == "aif")
-                        || (input_ext == "aif" && lc == "aiff")
-                        || (input_ext == "aiff" && lc == "aif")
-                        || (input_ext == "aif" && lc == "aiff")
-                        || (input_ext == "aiff" && lc == "aif")
-                        || (input_ext == "aif" && lc == "aiff")
+                || (input_ext == "aiff" && lc == "aif")
+                || (input_ext == "aif" && lc == "aiff")
+                || (input_ext == "aiff" && lc == "aif")
+                || (input_ext == "aif" && lc == "aiff")
+                || (input_ext == "aiff" && lc == "aif")
+                || (input_ext == "aif" && lc == "aiff")
         })
         .unwrap_or(false)
 }
@@ -866,10 +869,8 @@ fn process_file(path: &Path, rule: &AgentRule, rt: &tokio::runtime::Runtime) -> 
             keep_metadata: true,
             video_scale: crate::processor::VideoScale::Original,
             image_scale: crate::processor::ImageScale::Original,
-        }
+        },
     )) {
-
-
         Ok(()) => {
             let output_size = output_path.metadata().map(|m| m.len()).unwrap_or(0);
             let saved = input_size.saturating_sub(output_size);
@@ -908,7 +909,10 @@ fn output_extension<'a>(fmt: &'a str) -> Cow<'a, str> {
         "JPEG" => Cow::Borrowed("jpg"),
         other => {
             // Check if already lowercase to avoid allocation
-            if other.chars().all(|c| c.is_ascii_lowercase() || !c.is_ascii_alphabetic()) {
+            if other
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || !c.is_ascii_alphabetic())
+            {
                 Cow::Borrowed(other)
             } else {
                 Cow::Owned(other.to_ascii_lowercase())
@@ -1035,7 +1039,10 @@ mod tests {
 
         let rule = audio_rule(&dir.display().to_string());
         let mut processed = HashSet::new();
-        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
         // scan_and_convert should skip because .flac already exists
         let count = scan_and_convert(&[rule], &mut processed, &rt);
         assert_eq!(count, 0);
@@ -1054,11 +1061,19 @@ mod tests {
     #[test]
     fn pattern_matching_extensions_case_insensitive() {
         let path = std::path::Path::new("test.JPG");
-        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_uppercase();
+        let ext = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_uppercase();
         assert_eq!(ext, "JPG");
 
         let path2 = std::path::Path::new("document.PDF");
-        let ext2 = path2.extension().and_then(|e| e.to_str()).unwrap_or("").to_uppercase();
+        let ext2 = path2
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_uppercase();
         assert_eq!(ext2, "PDF");
     }
 
@@ -1066,16 +1081,16 @@ mod tests {
     fn file_filter_matching_basic() {
         let dir = std::env::temp_dir().join("rc_agent_filter_test");
         let _ = fs::create_dir_all(&dir);
-        
+
         // Create test files
         let mp3_path = dir.join("song.mp3");
         let jpeg_path = dir.join("photo.jpeg");
         let txt_path = dir.join("readme.txt");
-        
+
         fs::write(&mp3_path, b"mp3 data").unwrap();
         fs::write(&jpeg_path, b"jpeg data").unwrap();
         fs::write(&txt_path, b"text data").unwrap();
-        
+
         // Check extensions
         let mp3_ext = mp3_path
             .extension()
@@ -1092,11 +1107,11 @@ mod tests {
             .and_then(|e| e.to_str())
             .unwrap_or("")
             .to_uppercase();
-        
+
         assert_eq!(mp3_ext, "MP3");
         assert_eq!(jpeg_ext, "JPEG");
         assert_eq!(txt_ext, "TXT");
-        
+
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -1110,7 +1125,7 @@ mod tests {
             recursive: true,
             delete_originals: false,
         };
-        
+
         assert_eq!(rule.folder, "/home/user/music");
         assert_eq!(rule.input_fmt, "MP3");
         assert_eq!(rule.output_fmt, "FLAC");
@@ -1118,12 +1133,9 @@ mod tests {
 
     #[test]
     fn multiple_file_extensions() {
-        let extensions = vec!["jpg", "jpeg", "JPG", "JPEG", "Jpg"];
-        let normalized: Vec<String> = extensions
-            .iter()
-            .map(|e| e.to_uppercase())
-            .collect();
-        
+        let extensions = ["jpg", "jpeg", "JPG", "JPEG", "Jpg"];
+        let normalized: Vec<String> = extensions.iter().map(|e| e.to_uppercase()).collect();
+
         // All should normalize to uppercase
         for n in &normalized {
             assert_eq!(n.to_uppercase(), *n);
@@ -1138,7 +1150,7 @@ mod tests {
             ("AVI", "MKV", "mkv"),
             ("BMP", "WEBP", "webp"),
         ];
-        
+
         for (_input, output, expected_ext) in test_cases {
             let output_lower = output.to_lowercase();
             assert_eq!(output_lower, expected_ext);
@@ -1154,14 +1166,14 @@ mod tests {
             (false, true),  // non-recursive, delete originals
             (false, false), // non-recursive, keep originals
         ];
-        
+
         let media_types = vec![
             crate::formats::MediaType::Audio,
             crate::formats::MediaType::Video,
             crate::formats::MediaType::Images,
             crate::formats::MediaType::Documents,
         ];
-        
+
         for (recursive, delete) in &configs {
             for media_type in &media_types {
                 let rule = AgentRule {
@@ -1172,7 +1184,7 @@ mod tests {
                     recursive: *recursive,
                     delete_originals: *delete,
                 };
-                
+
                 assert_eq!(rule.recursive, *recursive);
                 assert_eq!(rule.delete_originals, *delete);
                 assert_eq!(rule.media_type, *media_type);
@@ -1183,7 +1195,7 @@ mod tests {
     #[test]
     fn file_format_string_handling() {
         let formats = vec!["MP3", "FLAC", "OGG", "WAV", "AIFF"];
-        
+
         for fmt in &formats {
             // Should be uppercase
             assert_eq!(*fmt, fmt.to_uppercase());
@@ -1204,7 +1216,7 @@ mod tests {
             recursive: true,
             delete_originals: false,
         };
-        
+
         let non_recursive_rule = AgentRule {
             folder: "/root".to_string(),
             media_type: crate::formats::MediaType::Audio,
@@ -1213,7 +1225,7 @@ mod tests {
             recursive: false,
             delete_originals: false,
         };
-        
+
         assert!(recursive_rule.recursive);
         assert!(!non_recursive_rule.recursive);
         assert_eq!(recursive_rule.folder, non_recursive_rule.folder);
@@ -1229,7 +1241,7 @@ mod tests {
             recursive: true,
             delete_originals: false,
         };
-        
+
         let delete_rule = AgentRule {
             folder: "/test".to_string(),
             media_type: crate::formats::MediaType::Images,
@@ -1238,7 +1250,7 @@ mod tests {
             recursive: true,
             delete_originals: true,
         };
-        
+
         assert!(!keep_rule.delete_originals);
         assert!(delete_rule.delete_originals);
     }
@@ -1251,7 +1263,7 @@ mod tests {
             ("OGG", "FLAC"),
             ("AAC", "OPUS"),
         ];
-        
+
         for (input, output) in pairs {
             assert_ne!(input, output); // Should be different
             let input_upper = input.to_uppercase();
@@ -1264,13 +1276,13 @@ mod tests {
     #[test]
     fn format_pairs_validation() {
         let audio = crate::formats::MediaType::Audio;
-        
+
         let test_pairs = vec![
-            ("WAV", "FLAC"),  // lossless to lossless
-            ("MP3", "OPUS"),  // lossy to lossy
-            ("FLAC", "OGG"),  // lossless to lossy
+            ("WAV", "FLAC"), // lossless to lossless
+            ("MP3", "OPUS"), // lossy to lossy
+            ("FLAC", "OGG"), // lossless to lossy
         ];
-        
+
         for (input, output) in test_pairs {
             // Check that compatible outputs contains the target
             let compatible = audio.compatible_outputs(input);

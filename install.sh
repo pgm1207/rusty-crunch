@@ -35,7 +35,7 @@ echo ""
 # Check if binary exists
 if [ ! -f "$BINARY" ]; then
     echo "❌ Error: '$BINARY' binary not found in current directory"
-    echo "Please download the binary from https://github.com/pablogonz12/rusty-crunch/releases"
+    echo "Please download the binary from https://github.com/pgm1207/rusty-crunch/releases"
     exit 1
 fi
 

@@ -3,8 +3,12 @@
 **/*.rs.bk
 *.pdb
 
-# Cargo lock file (if not in root)
-Cargo.lock
+# Local build outputs / vendored tools (never commit binaries)
+/rusty-crunch
+/rusty-crunch.exe
+/gh.zip
+/gh_cli/
+agent.rs.txt
 
 # IDE
 .vscode/
@@ -15,5 +19,4 @@ Cargo.lock
 .DS_Store
 
 # OS
-.DS_Store
 Thumbs.db

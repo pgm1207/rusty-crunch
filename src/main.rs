@@ -10,11 +10,15 @@ mod util;
 use anyhow::Result;
 use clap::Parser;
 use console::style;
-use dialoguer::{Select, theme::ColorfulTheme};
+use dialoguer::{theme::ColorfulTheme, Select};
 use std::path::PathBuf;
 
 #[derive(Parser)]
-#[command(name = "rusty-crunch", version, about = "Fast parallel media converter")]
+#[command(
+    name = "rusty-crunch",
+    version,
+    about = "Fast parallel media converter"
+)]
 struct Cli {
     /// Simulate the run without converting anything
     #[arg(long)]
@@ -51,10 +55,55 @@ struct Cli {
     /// Print conversion summary as JSON to stdout
     #[arg(long)]
     json: bool,
+
+    /// Disable colored output (also honours the NO_COLOR environment variable)
+    #[arg(long, global = true)]
+    no_color: bool,
+
+    /// Non-interactive: skip every prompt and use config defaults (requires FOLDER)
+    #[arg(short = 'y', long = "yes")]
+    yes: bool,
+
+    /// Non-interactive action: optimize (default), upscale, or restore
+    #[arg(long, value_name = "MODE", value_parser = ["optimize", "upscale", "restore"])]
+    mode: Option<String>,
+
+    /// Scan sub-folders recursively (non-interactive; overrides the config default)
+    #[arg(long)]
+    recursive: bool,
+
+    /// Do not scan sub-folders (non-interactive; overrides the config default)
+    #[arg(long = "no-recursive", conflicts_with = "recursive")]
+    no_recursive: bool,
+
+    /// Delete originals after a successful conversion (non-interactive)
+    #[arg(long = "delete-originals")]
+    delete_originals: bool,
+
+    /// Re-process files even if they were already optimized (non-interactive)
+    #[arg(long = "force-recheck")]
+    force_recheck: bool,
+
+    /// Output quality for optimize: low, medium, or high
+    #[arg(long, value_name = "QUALITY", value_parser = ["low", "medium", "high"])]
+    quality: Option<String>,
+
+    /// Target height for --mode upscale (e.g. 1080, 1440, 2160)
+    #[arg(long, value_name = "HEIGHT")]
+    target: Option<u32>,
+
+    /// Upscale profile for --mode upscale: anime or movie
+    #[arg(long, value_name = "PROFILE", value_parser = ["anime", "movie"])]
+    preset: Option<String>,
 }
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+
+    // Respect --no-color, the NO_COLOR convention, and non-TTY output.
+    if cli.no_color || std::env::var_os("NO_COLOR").is_some() || !console::user_attended() {
+        console::set_colors_enabled(false);
+    }
 
     if cli.agent {
         return agent::run_headless();
@@ -67,6 +116,11 @@ fn main() -> Result<()> {
     }
     if cli.health_check {
         return run_health_check();
+    }
+
+    // Non-interactive path: `--yes` (or an explicit `--mode`).
+    if cli.yes || cli.mode.is_some() {
+        return run_noninteractive(&cli);
     }
 
     loop {
@@ -135,12 +189,202 @@ fn main() -> Result<()> {
             }
             Some(3) => agent::setup()?,
             Some(4) => config::edit_settings()?,
-            Some(5) => { check_for_updates()?; pause_before_menu(); }
+            Some(5) => {
+                check_for_updates()?;
+                pause_before_menu();
+            }
             _ => {
                 println!("  {} Bye!\n", style("👋").cyan());
                 break;
             }
         }
+    }
+    Ok(())
+}
+
+fn run_noninteractive(cli: &Cli) -> Result<()> {
+    let cfg = config::load();
+    let mode = cli.mode.as_deref().unwrap_or("optimize");
+
+    if mode == "restore" {
+        return processor::restore_last_session();
+    }
+
+    // Validate size filters up front (same rules as the interactive path).
+    let min_size = cli.min_size.as_deref().and_then(util::parse_size);
+    let max_size = cli.max_size.as_deref().and_then(util::parse_size);
+    if cli.min_size.is_some() && min_size.is_none() {
+        anyhow::bail!("Invalid --min-size format. Use: 10MB, 1GB, 512KB, etc.");
+    }
+    if cli.max_size.is_some() && max_size.is_none() {
+        anyhow::bail!("Invalid --max-size format. Use: 500MB, 2GB, 100MB, etc.");
+    }
+
+    let folder = cli
+        .folder
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("FOLDER is required in non-interactive mode (--yes)"))?;
+    let folder = if folder.is_relative() {
+        std::env::current_dir()?.join(folder)
+    } else {
+        folder.clone()
+    };
+    if !folder.is_dir() {
+        anyhow::bail!("Not a directory: {}", folder.display());
+    }
+
+    let recursive = if cli.recursive {
+        true
+    } else if cli.no_recursive {
+        false
+    } else {
+        cfg.default_recursive
+    };
+    let delete = cli.delete_originals || cfg.default_delete_originals;
+    let quality = match cli.quality.as_deref() {
+        Some("low") => processor::Quality::Low,
+        Some("medium") => processor::Quality::Medium,
+        _ => processor::Quality::High,
+    };
+    let threads = util::active_threads();
+
+    if !cli.json {
+        println!(
+            "\n  {} {} (non-interactive)",
+            style("⚙\u{fe0f}").cyan(),
+            style(mode).cyan().bold(),
+        );
+        println!(
+            "  {} {}",
+            style("Folder").dim(),
+            style(folder.display()).white().bold(),
+        );
+        println!(
+            "  {} recursive={}  delete_originals={}{}",
+            style("Options").dim(),
+            recursive,
+            delete,
+            if cli.dry_run { "  dry_run=true" } else { "" },
+        );
+        println!();
+    }
+
+    let mut summaries: Vec<processor::ConversionSummary> = Vec::new();
+
+    if mode == "upscale" {
+        let target_height = cli.target.unwrap_or(1080);
+        let preset = match cli.preset.as_deref() {
+            Some("anime") => processor::UpscalePreset::Anime,
+            _ => processor::UpscalePreset::Movie,
+        };
+        let applicable: Vec<&str> = formats::MediaType::Video
+            .formats()
+            .iter()
+            .copied()
+            .filter(|f| processor::has_matching_files(&folder, f, recursive))
+            .collect();
+        if applicable.is_empty() {
+            if !cli.json {
+                println!("  {} No video files found.", style("\u{26a0}").yellow());
+            }
+            return Ok(());
+        }
+        if !cli.dry_run {
+            deps::check(formats::MediaType::Video)?;
+        }
+        for input_fmt in &applicable {
+            let summary = processor::run(&processor::Job {
+                folder: &folder,
+                media_type: formats::MediaType::Video,
+                input_fmt,
+                output_fmt: "MKV",
+                recursive,
+                delete_originals: delete,
+                force_recheck: cli.force_recheck,
+                dry_run: cli.dry_run,
+                threads,
+                output_subfolder: None,
+                min_file_size: min_size,
+                max_file_size: max_size,
+                conflict_strategy: cfg.conflict_strategy,
+                normalize_audio: false,
+                quality,
+                keep_metadata: true,
+                video_scale: processor::VideoScale::AutoTarget {
+                    target_height,
+                    preset,
+                },
+                image_scale: processor::ImageScale::Original,
+            })?;
+            summaries.push(summary);
+        }
+    } else {
+        let applicable: Vec<(formats::MediaType, &str, &str)> = formats::recommended_conversions()
+            .iter()
+            .copied()
+            .filter(|(_, input_fmt, _)| {
+                processor::has_matching_files(&folder, input_fmt, recursive)
+            })
+            .collect();
+        if applicable.is_empty() {
+            if !cli.json {
+                println!(
+                    "  {} No files found that can be optimized.",
+                    style("\u{26a0}").yellow()
+                );
+            }
+            return Ok(());
+        }
+        let mut ensured: Vec<formats::MediaType> = Vec::new();
+        for &(mt, _, _) in &applicable {
+            if !cli.dry_run && !ensured.contains(&mt) {
+                deps::check(mt)?;
+                ensured.push(mt);
+            }
+        }
+        for &(mt, input_fmt, output_fmt) in &applicable {
+            let summary = processor::run(&processor::Job {
+                folder: &folder,
+                media_type: mt,
+                input_fmt,
+                output_fmt,
+                recursive,
+                delete_originals: delete,
+                force_recheck: cli.force_recheck,
+                dry_run: cli.dry_run,
+                threads,
+                output_subfolder: None,
+                min_file_size: min_size,
+                max_file_size: max_size,
+                conflict_strategy: cfg.conflict_strategy,
+                normalize_audio: false,
+                quality,
+                keep_metadata: true,
+                video_scale: processor::VideoScale::Original,
+                image_scale: processor::ImageScale::Original,
+            })?;
+            summaries.push(summary);
+        }
+    }
+
+    if cli.json {
+        println!("{}", serde_json::to_string_pretty(&summaries)?);
+    } else {
+        let converted: usize = summaries.iter().map(|s| s.files_converted).sum();
+        let failed: usize = summaries.iter().map(|s| s.files_failed).sum();
+        let saved: u64 = summaries.iter().map(|s| s.bytes_saved).sum();
+        println!(
+            "\n  {} {} file{} converted, {} failed, {} saved",
+            style("\u{2714}").green().bold(),
+            converted,
+            if converted == 1 { "" } else { "s" },
+            failed,
+            util::human_bytes(saved),
+        );
+    }
+
+    if !cli.dry_run && summaries.iter().any(|s| s.files_failed > 0) {
+        std::process::exit(1);
     }
     Ok(())
 }
@@ -189,27 +433,42 @@ fn run_crunch(cli: &Cli, forced_mode: Option<prompt::CrunchMode>) -> Result<()> 
     if cli.max_size.is_some() && max_size.is_none() {
         anyhow::bail!("Invalid --max-size format. Use: 500MB, 2GB, 100MB, etc.");
     }
-    
+
     // ── Shared settings (asked once for all jobs) ───────────────────
     let folder = if let Some(ref f) = cli.folder {
-        let f = if f.is_relative() { std::env::current_dir()?.join(f) } else { f.clone() };
-        if !f.is_dir() { anyhow::bail!("Not a directory: {}", f.display()); }
+        let f = if f.is_relative() {
+            std::env::current_dir()?.join(f)
+        } else {
+            f.clone()
+        };
+        if !f.is_dir() {
+            anyhow::bail!("Not a directory: {}", f.display());
+        }
         ack("Folder", &f.display().to_string());
         f
     } else {
         match prompt::select_folder(&cfg)? {
-            Some(f) => { ack("Folder", &f.display().to_string()); f }
+            Some(f) => {
+                ack("Folder", &f.display().to_string());
+                f
+            }
             None => return Ok(()),
         }
     };
 
     let recursive = match prompt::confirm_scan_subdirs(&cfg)? {
-        Some(r) => { ack("Recursive", if r { "Yes" } else { "No" }); r }
+        Some(r) => {
+            ack("Recursive", if r { "Yes" } else { "No" });
+            r
+        }
         None => return Ok(()),
     };
 
     let delete = match prompt::confirm_delete_originals(&cfg)? {
-        Some(d) => { ack("Delete originals", if d { "Yes" } else { "No" }); d }
+        Some(d) => {
+            ack("Delete originals", if d { "Yes" } else { "No" });
+            d
+        }
         None => return Ok(()),
     };
 
@@ -289,7 +548,10 @@ fn run_crunch(cli: &Cli, forced_mode: Option<prompt::CrunchMode>) -> Result<()> 
                     image_scale: crate::processor::ImageScale::Original,
                 });
             }
-            ack("Added", &format!("{} → FLAC", formats::LOSSLESS_AUDIO_INPUTS.join("/")));
+            ack(
+                "Added",
+                &format!("{} → FLAC", formats::LOSSLESS_AUDIO_INPUTS.join("/")),
+            );
         } else if raw_input == formats::LOSSY_AUDIO_SENTINEL {
             let quality = prompt::select_quality().unwrap_or(crate::processor::Quality::High);
             let keep_metadata = prompt::confirm_keep_metadata().unwrap_or(true);
@@ -305,7 +567,10 @@ fn run_crunch(cli: &Cli, forced_mode: Option<prompt::CrunchMode>) -> Result<()> 
                     image_scale: crate::processor::ImageScale::Original,
                 });
             }
-            ack("Added", &format!("{} → OPUS", formats::LOSSY_AUDIO_INPUTS.join("/")));
+            ack(
+                "Added",
+                &format!("{} → OPUS", formats::LOSSY_AUDIO_INPUTS.join("/")),
+            );
         } else {
             let output_fmt = 'pick_out: loop {
                 match prompt::select_output_format(media, raw_input)? {
@@ -316,9 +581,9 @@ fn run_crunch(cli: &Cli, forced_mode: Option<prompt::CrunchMode>) -> Result<()> 
                         continue 'outer;
                     }
                     Some(f) => match prompt::lossy_warning(media, raw_input, f)? {
-                        Some(true)  => break 'pick_out f,
+                        Some(true) => break 'pick_out f,
                         Some(false) => continue,
-                        None        => {
+                        None => {
                             if crunch_mode == prompt::CrunchMode::UpscaleVideo {
                                 return Ok(());
                             }
@@ -328,10 +593,10 @@ fn run_crunch(cli: &Cli, forced_mode: Option<prompt::CrunchMode>) -> Result<()> 
                 }
             };
             ack("Output format", output_fmt);
-            specs.push(JobSpec { 
-                media, 
-                input_fmt: raw_input, 
-                output_fmt, 
+            specs.push(JobSpec {
+                media,
+                input_fmt: raw_input,
+                output_fmt,
                 normalize_audio,
                 quality: prompt::select_quality()?,
                 keep_metadata: prompt::confirm_keep_metadata()?,
@@ -344,7 +609,11 @@ fn run_crunch(cli: &Cli, forced_mode: Option<prompt::CrunchMode>) -> Result<()> 
                 } else {
                     crate::processor::VideoScale::Original
                 },
-                image_scale: if media == formats::MediaType::Images { prompt::select_image_scale()? } else { crate::processor::ImageScale::Original },
+                image_scale: if media == formats::MediaType::Images {
+                    prompt::select_image_scale()?
+                } else {
+                    crate::processor::ImageScale::Original
+                },
             });
         }
 
@@ -382,14 +651,26 @@ fn run_crunch(cli: &Cli, forced_mode: Option<prompt::CrunchMode>) -> Result<()> 
         style(folder.display()).white(),
     );
     let mut opts = format!("recursive={}  delete_originals={}", recursive, delete);
-    if cli.dry_run { opts.push_str("  dry_run=true"); }
-    if let Some(ref s) = subfolder { opts.push_str(&format!("  sub-folder={s}")); }
-    println!("  {} {:<18} {}", style("┃").dim(), style("Options").dim(), style(&opts).white());
+    if cli.dry_run {
+        opts.push_str("  dry_run=true");
+    }
+    if let Some(ref s) = subfolder {
+        opts.push_str(&format!("  sub-folder={s}"));
+    }
+    println!(
+        "  {} {:<18} {}",
+        style("┃").dim(),
+        style("Options").dim(),
+        style(&opts).white()
+    );
     println!("  {sep}\n");
 
     match prompt::final_confirmation()? {
         Some(true) => {}
-        _ => { println!("  {} Cancelled.", style("✗").red()); return Ok(()); }
+        _ => {
+            println!("  {} Cancelled.", style("✗").red());
+            return Ok(());
+        }
     }
 
     let threads = util::active_threads();
@@ -455,7 +736,10 @@ fn run_recommended_upscale(cli: &Cli) -> Result<()> {
         "  {} Target resolution is selected once; each file gets the closest 2x/3x/4x multiplier.",
         style("·").dim(),
     );
-    println!("  {} Keeps streams in MKV for best subtitle/audio preservation.", style("·").dim());
+    println!(
+        "  {} Keeps streams in MKV for best subtitle/audio preservation.",
+        style("·").dim()
+    );
     println!();
 
     let folder = if let Some(ref f) = cli.folder {
@@ -594,7 +878,10 @@ fn run_recommended_upscale(cli: &Cli) -> Result<()> {
             normalize_audio: false,
             quality: crate::processor::Quality::Medium,
             keep_metadata: true,
-            video_scale: crate::processor::VideoScale::AutoTarget { target_height, preset },
+            video_scale: crate::processor::VideoScale::AutoTarget {
+                target_height,
+                preset,
+            },
             image_scale: crate::processor::ImageScale::Original,
         })?;
         summaries.push(summary);
@@ -606,7 +893,10 @@ fn run_recommended_upscale(cli: &Cli) -> Result<()> {
         }
     }
 
-    println!("\n  {} Recommended Upscale complete!", style("✔").green().bold());
+    println!(
+        "\n  {} Recommended Upscale complete!",
+        style("✔").green().bold()
+    );
     Ok(())
 }
 
@@ -676,18 +966,12 @@ fn run_recommended_crunch(cli: &Cli) -> Result<()> {
         "  {} Audio: WAV/AIFF → FLAC · MP3/OGG/AAC/M4A/WMA → OPUS",
         style("·").dim(),
     );
-    println!(
-        "  {} Video: AVI/MOV/FLV/WMV/TS → MKV",
-        style("·").dim(),
-    );
+    println!("  {} Video: AVI/MOV/FLV/WMV/TS → MKV", style("·").dim(),);
     println!(
         "  {} Images: BMP/TIFF/ICO/GIF → PNG · JPEG → AVIF",
         style("·").dim(),
     );
-    println!(
-        "  {} Documents: PDF → PDF (Optimized)",
-        style("·").dim(),
-    );
+    println!("  {} Documents: PDF → PDF (Optimized)", style("·").dim(),);
     println!();
 
     // ── Folder ──────────────────────────────────────────────────────
@@ -748,9 +1032,7 @@ fn run_recommended_crunch(cli: &Cli) -> Result<()> {
     let applicable: Vec<(formats::MediaType, &str, &str)> = all_conversions
         .iter()
         .copied()
-        .filter(|(_, input_fmt, _)| {
-            processor::has_matching_files(&folder, input_fmt, recursive)
-        })
+        .filter(|(_, input_fmt, _)| processor::has_matching_files(&folder, input_fmt, recursive))
         .collect();
 
     if applicable.is_empty() {
@@ -776,11 +1058,7 @@ fn run_recommended_crunch(cli: &Cli) -> Result<()> {
         );
     }
     if cli.dry_run {
-        println!(
-            "  {} {}",
-            style("┃").dim(),
-            style("dry_run=true").white(),
-        );
+        println!("  {} {}", style("┃").dim(), style("dry_run=true").white(),);
     }
     println!("  {sep}");
     println!();
@@ -875,8 +1153,8 @@ fn check_for_updates() -> Result<()> {
                 style(&latest).cyan().bold(),
             );
             let prompt = format!("Update from v{current} to v{latest}?");
-            use dialoguer::Confirm;
             use dialoguer::theme::ColorfulTheme;
+            use dialoguer::Confirm;
             match Confirm::with_theme(&ColorfulTheme::default())
                 .with_prompt(&prompt)
                 .default(true)
@@ -891,7 +1169,11 @@ fn check_for_updates() -> Result<()> {
 }
 
 fn run_health_check() -> Result<()> {
-    println!("\n  {} {}\n", style("🔍").cyan(), style("System Health Check").cyan().bold());
+    println!(
+        "\n  {} {}\n",
+        style("🔍").cyan(),
+        style("System Health Check").cyan().bold()
+    );
 
     let mut issues = Vec::new();
 
@@ -916,22 +1198,41 @@ fn run_health_check() -> Result<()> {
     }
 
     if issues.is_empty() {
-        println!("  {} All required tools are installed:\n", style("✓").green());
+        println!(
+            "  {} All required tools are installed:\n",
+            style("✓").green()
+        );
         println!("  {} ffmpeg — audio/video", style("✓").green());
         println!("  {} ImageMagick — images", style("✓").green());
         println!("  {} Ghostscript — PDF", style("✓").green());
         println!("  {} LibreOffice — documents", style("✓").green());
-        println!("\n  {} System is ready for conversions\n", style("✓").green().bold());
+        println!(
+            "\n  {} System is ready for conversions\n",
+            style("✓").green().bold()
+        );
         return Ok(());
     }
 
-    println!("  {} {} tool{} missing:\n", style("✗").red(), issues.len(), if issues.len() == 1 { "" } else { "s" });
+    println!(
+        "  {} {} tool{} missing:\n",
+        style("✗").red(),
+        issues.len(),
+        if issues.len() == 1 { "" } else { "s" }
+    );
     for (tool, purpose) in &issues {
-        println!("  {} {} — {}", style("✗").red(), style(tool).white().bold(), purpose);
+        println!(
+            "  {} {} — {}",
+            style("✗").red(),
+            style(tool).white().bold(),
+            purpose
+        );
     }
 
     println!("\n  {} Install missing tools:\n", style("ℹ").cyan());
-    println!("  {} rusty-crunch can auto-install on supported systems", style("·").dim());
+    println!(
+        "  {} rusty-crunch can auto-install on supported systems",
+        style("·").dim()
+    );
 
     #[cfg(target_os = "windows")]
     {
@@ -944,13 +1245,20 @@ fn run_health_check() -> Result<()> {
             "  {} Ghostscript: https://ghostscript.com/releases/gsdnld.html",
             style("·").dim()
         );
-        println!("  {} Restart terminal after installing so PATH updates are detected\n", style("·").dim());
+        println!(
+            "  {} Restart terminal after installing so PATH updates are detected\n",
+            style("·").dim()
+        );
     }
 
     #[cfg(not(target_os = "windows"))]
     {
-        println!("  {} Or install manually: https://github.com/pablogonz12/rusty-crunch#installation\n", style("·").dim());
+        println!(
+            "  {} Or install manually: https://github.com/pgm1207/rusty-crunch#installation\n",
+            style("·").dim()
+        );
     }
 
-    Ok(())
+    // Non-zero exit so scripts/CI can detect a missing dependency.
+    std::process::exit(1);
 }

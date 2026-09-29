@@ -1,6 +1,6 @@
-use anyhow::{bail, Result};
 #[cfg(target_os = "windows")]
 use anyhow::Context;
+use anyhow::{bail, Result};
 use console::style;
 use serde_json::Value;
 #[cfg(target_os = "windows")]
@@ -11,10 +11,7 @@ use std::sync::{Mutex, OnceLock};
 /// Number of available CPU cores (cached).
 pub fn cores() -> usize {
     static CORES: OnceLock<usize> = OnceLock::new();
-    *CORES.get_or_init(|| {
-        std::thread::available_parallelism()
-            .map_or(1, |n| n.get())
-    })
+    *CORES.get_or_init(|| std::thread::available_parallelism().map_or(1, |n| n.get()))
 }
 
 /// Module-level cache for `has()` lookups.
@@ -90,6 +87,7 @@ pub fn refresh_windows_process_path() {
 }
 
 #[cfg(not(target_os = "windows"))]
+#[allow(dead_code)] // no-op stub; only meaningful on Windows
 pub fn refresh_windows_process_path() {}
 
 /// Total threads to use for parallel processing, based on the configured thread mode.
@@ -104,11 +102,8 @@ pub fn active_threads() -> usize {
 /// Returns None if parsing fails.
 pub fn parse_size(s: &str) -> Option<u64> {
     let s = s.trim().to_uppercase();
-    let (num_str, unit) = if let Some(pos) = s.find(|c: char| c.is_alphabetic()) {
-        s.split_at(pos)
-    } else {
-        return None;
-    };
+    let pos = s.find(|c: char| c.is_alphabetic())?;
+    let (num_str, unit) = s.split_at(pos);
 
     let num: f64 = num_str.trim().parse().ok()?;
     if num < 0.0 {
@@ -137,8 +132,14 @@ pub fn check_for_update() -> Result<Option<String>> {
         bail!("curl is not installed — required for update checks");
     }
     let output = Command::new("curl")
-        .args(["-sf", "--connect-timeout", "5", "--max-time", "10",
-               "https://api.github.com/repos/pablogonz12/rusty-crunch/releases/latest"])
+        .args([
+            "-sf",
+            "--connect-timeout",
+            "5",
+            "--max-time",
+            "10",
+            "https://api.github.com/repos/pgm1207/rusty-crunch/releases/latest",
+        ])
         .stderr(Stdio::null())
         .output()
         .map_err(|e| anyhow::anyhow!("curl failed: {}", e))?;
@@ -150,10 +151,15 @@ pub fn check_for_update() -> Result<Option<String>> {
     let body = String::from_utf8_lossy(&output.stdout);
     let json: Value = serde_json::from_str(&body)
         .map_err(|_| anyhow::anyhow!("Unexpected response from GitHub API"))?;
-    let tag = json["tag_name"].as_str()
+    let tag = json["tag_name"]
+        .as_str()
         .ok_or_else(|| anyhow::anyhow!("tag_name missing from GitHub response"))?;
     let ver = tag.trim_start_matches('v').to_string();
-    if is_newer_than_current(&ver) { Ok(Some(ver)) } else { Ok(None) }
+    if is_newer_than_current(&ver) {
+        Ok(Some(ver))
+    } else {
+        Ok(None)
+    }
 }
 
 fn is_newer_than_current(ver: &str) -> bool {
@@ -182,6 +188,50 @@ fn update_artifact() -> Option<&'static str> {
     }
 }
 
+/// Expected SHA-256 for `artifact` from the release's `SHA256SUMS`, if published.
+fn fetch_expected_sha(version: &str, artifact: &str) -> Option<String> {
+    let url =
+        format!("https://github.com/pgm1207/rusty-crunch/releases/download/v{version}/SHA256SUMS");
+    let out = Command::new("curl")
+        .args(["-sfL", "--connect-timeout", "10", "--max-time", "30"])
+        .arg(&url)
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let body = String::from_utf8_lossy(&out.stdout);
+    for line in body.lines() {
+        let mut it = line.split_whitespace();
+        if let (Some(hash), Some(name)) = (it.next(), it.next()) {
+            if name.trim_start_matches('*') == artifact {
+                return Some(hash.to_lowercase());
+            }
+        }
+    }
+    None
+}
+
+/// Compute the SHA-256 of a file with the platform's standard tool.
+fn sha256_file(path: &std::path::Path) -> Option<String> {
+    let (tool, args): (&str, &[&str]) = if cfg!(target_os = "macos") {
+        ("shasum", &["-a", "256"])
+    } else {
+        ("sha256sum", &[])
+    };
+    if !has(tool) {
+        return None;
+    }
+    let out = Command::new(tool).args(args).arg(path).output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&out.stdout)
+        .split_whitespace()
+        .next()
+        .map(|h| h.to_lowercase())
+}
+
 /// Download and install the given version. Replaces the running binary and restarts.
 /// On Windows: swaps via a helper batch script.
 /// On Unix: atomic rename, then exec the new binary in-place.
@@ -189,17 +239,28 @@ pub fn download_and_install_update(version: &str) -> Result<()> {
     let artifact = update_artifact()
         .ok_or_else(|| anyhow::anyhow!("Auto-update not supported on this platform"))?;
 
-    let url = format!(
-        "https://github.com/pablogonz12/rusty-crunch/releases/download/v{version}/{artifact}"
-    );
+    let url =
+        format!("https://github.com/pgm1207/rusty-crunch/releases/download/v{version}/{artifact}");
 
     let current_exe = std::env::current_exe()?;
     let tmp = current_exe.with_extension("update_tmp");
 
-    println!("  {} Downloading v{} \u{2026}", style("\u{2b07}").cyan(), style(version).white().bold());
+    println!(
+        "  {} Downloading v{} \u{2026}",
+        style("\u{2b07}").cyan(),
+        style(version).white().bold()
+    );
 
     let status = Command::new("curl")
-        .args(["-L", "--connect-timeout", "30", "--max-time", "300", "-#", "-o"])
+        .args([
+            "-L",
+            "--connect-timeout",
+            "30",
+            "--max-time",
+            "300",
+            "-#",
+            "-o",
+        ])
         .arg(&tmp)
         .arg(&url)
         .status()
@@ -208,6 +269,27 @@ pub fn download_and_install_update(version: &str) -> Result<()> {
     if !status.success() {
         let _ = std::fs::remove_file(&tmp);
         bail!("Download failed — check your internet connection");
+    }
+
+    // Supply-chain check: verify the artifact against the release SHA256SUMS.
+    match fetch_expected_sha(version, artifact) {
+        Some(expected) => match sha256_file(&tmp) {
+            Some(actual) if actual == expected => {
+                println!("  {} Checksum verified", style("\u{2714}").green());
+            }
+            Some(_) => {
+                let _ = std::fs::remove_file(&tmp);
+                bail!("Checksum mismatch for {artifact} — aborting update");
+            }
+            None => {
+                eprintln!("  \u{26a0} Could not verify checksum (sha256sum/shasum not found)");
+            }
+        },
+        None => {
+            eprintln!(
+                "  \u{26a0} Release publishes no SHA256SUMS — skipping checksum verification"
+            );
+        }
     }
 
     #[cfg(target_os = "windows")]
@@ -228,7 +310,11 @@ pub fn download_and_install_update(version: &str) -> Result<()> {
         Command::new("cmd")
             .args(["/C", "start", "/min", "", bat_str])
             .spawn()?;
-        println!("\n  {} Updated to v{}. Restarting\u{2026}\n", style("\u{2714}").green().bold(), version);
+        println!(
+            "\n  {} Updated to v{}. Restarting\u{2026}\n",
+            style("\u{2714}").green().bold(),
+            version
+        );
         std::process::exit(0);
     }
 
@@ -238,7 +324,11 @@ pub fn download_and_install_update(version: &str) -> Result<()> {
         use std::os::unix::process::CommandExt;
         std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755))?;
         std::fs::rename(&tmp, &current_exe)?;
-        println!("\n  {} Updated to v{}. Restarting\u{2026}\n", style("\u{2714}").green().bold(), version);
+        println!(
+            "\n  {} Updated to v{}. Restarting\u{2026}\n",
+            style("\u{2714}").green().bold(),
+            version
+        );
         let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
         let err = Command::new(&current_exe).args(&args).exec();
         bail!("Restart failed: {}", err);
@@ -278,10 +368,7 @@ fn resolve_from_path(name: &str) -> Option<String> {
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let first = stdout
-        .lines()
-        .map(str::trim)
-        .find(|l| !l.is_empty())?;
+    let first = stdout.lines().map(str::trim).find(|l| !l.is_empty())?;
     Some(first.to_string())
 }
 
@@ -305,7 +392,12 @@ fn resolve_windows_known_location(name: &str) -> Option<String> {
     let mut candidates: Vec<PathBuf> = Vec::new();
 
     if let Some(appdata) = local_app_data() {
-        candidates.push(appdata.join("Microsoft").join("WindowsApps").join(format!("{name}.exe")));
+        candidates.push(
+            appdata
+                .join("Microsoft")
+                .join("WindowsApps")
+                .join(format!("{name}.exe")),
+        );
     }
 
     if let Some(home) = user_profile() {
@@ -358,8 +450,16 @@ fn resolve_windows_known_location(name: &str) -> Option<String> {
 
     let program_data = std::env::var_os("ProgramData").map(PathBuf::from);
     if let Some(pd) = program_data {
-        candidates.push(pd.join("chocolatey").join("bin").join(format!("{name}.exe")));
-        candidates.push(pd.join("chocolatey").join("bin").join(format!("{name}.bat")));
+        candidates.push(
+            pd.join("chocolatey")
+                .join("bin")
+                .join(format!("{name}.exe")),
+        );
+        candidates.push(
+            pd.join("chocolatey")
+                .join("bin")
+                .join(format!("{name}.bat")),
+        );
     }
 
     candidates
@@ -438,7 +538,12 @@ fn detect_h264_encoder() -> H264Encoder {
         // Mesa compatible GPUs (AMD/Intel on Linux) via VAAPI.
         let path = std::path::Path::new("/dev/dri/renderD128");
         if path.exists() {
-            let va_args = ["-vaapi_device", "/dev/dri/renderD128", "-vf", "format=nv12,hwupload"];
+            let va_args = [
+                "-vaapi_device",
+                "/dev/dri/renderD128",
+                "-vf",
+                "format=nv12,hwupload",
+            ];
             if probe_encoder("h264_vaapi", &va_args) {
                 return H264Encoder {
                     name: "h264_vaapi",
@@ -532,9 +637,13 @@ pub fn has_lo() -> bool {
 /// Returns true if ImageMagick is available.
 /// On Windows, only checks for `magick` (never `convert`).
 pub fn has_magick() -> bool {
-    if has("magick") { return true; }
+    if has("magick") {
+        return true;
+    }
     #[cfg(not(target_os = "windows"))]
-    if has("convert") { return true; }
+    if has("convert") {
+        return true;
+    }
     false
 }
 
@@ -557,14 +666,16 @@ pub fn human_bytes(b: u64) -> String {
 /// Try to actually initialize an encoder — returns true only if it can start.
 fn probe_encoder(name: &str, extra_args: &[&str]) -> bool {
     let mut args = vec![
-        "-hide_banner", "-loglevel", "error",
-        "-f", "lavfi", "-i", "color=black:s=256x256:d=0.04:r=25",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-f",
+        "lavfi",
+        "-i",
+        "color=black:s=256x256:d=0.04:r=25",
     ];
     args.extend(extra_args);
-    args.extend([
-        "-c:v", name, "-frames:v", "1",
-        "-f", "null", "-",
-    ]);
+    args.extend(["-c:v", name, "-frames:v", "1", "-f", "null", "-"]);
     let ffmpeg = ffmpeg_command();
     Command::new(ffmpeg)
         .args(&args)
@@ -648,24 +759,24 @@ mod tests {
         assert_eq!(human_bytes(1024), "1 KB");
         assert_eq!(human_bytes(1025), "1 KB");
         assert_eq!(human_bytes(2048), "2 KB");
-        assert_eq!(human_bytes(2560), "2 KB");      // 2.5 KB rounds to 2 with {:.0}
-        assert_eq!(human_bytes(1047552), "1023 KB");  // 1047552 / 1024 = 1022.99... ≈ 1023
-        assert_eq!(human_bytes(1048576), "1.0 MB");   // Exactly 1 MB
+        assert_eq!(human_bytes(2560), "2 KB"); // 2.5 KB rounds to 2 with {:.0}
+        assert_eq!(human_bytes(1047552), "1023 KB"); // 1047552 / 1024 = 1022.99... ≈ 1023
+        assert_eq!(human_bytes(1048576), "1.0 MB"); // Exactly 1 MB
         assert_eq!(human_bytes(1572864), "1.5 MB");
         assert_eq!(human_bytes(1073741823), "1024.0 MB"); // Just under 1 GB
-        assert_eq!(human_bytes(1073741824), "1.00 GB");   // Exactly 1 GB
-        assert_eq!(human_bytes(2147483648), "2.00 GB");   // 2 GB
+        assert_eq!(human_bytes(1073741824), "1.00 GB"); // Exactly 1 GB
+        assert_eq!(human_bytes(2147483648), "2.00 GB"); // 2 GB
     }
 
     #[test]
     fn test_parse_size_decimal_edge_cases() {
         // Decimal parsing with various levels of precision
-        assert_eq!(parse_size("0.5B"), Some(0));      // Rounds down
-        assert_eq!(parse_size("0.5KB"), Some(512));   // Float calc: 0.5 * 1024 = 512
-        assert_eq!(parse_size("2.5KB"), Some(2560));  // 2.5 * 1024 = 2560
+        assert_eq!(parse_size("0.5B"), Some(0)); // Rounds down
+        assert_eq!(parse_size("0.5KB"), Some(512)); // Float calc: 0.5 * 1024 = 512
+        assert_eq!(parse_size("2.5KB"), Some(2560)); // 2.5 * 1024 = 2560
         assert_eq!(parse_size("1.25MB"), Some(1310720)); // 1.25 * 1024 * 1024 = 1310720
         assert_eq!(parse_size("0.1MB"), Some(104857)); // 0.1 * 1024 * 1024 ≈ 104857.6, truncated to 104857
-        // Note: "99.99MB" produces approximately 104847114 due to floating point precision
+                                                       // Note: "99.99MB" produces approximately 104847114 due to floating point precision
     }
 
     #[test]
@@ -691,13 +802,13 @@ mod tests {
         // More invalid cases
         assert_eq!(parse_size(""), None);
         assert_eq!(parse_size("   "), None);
-        assert_eq!(parse_size("MB"), None);        // No number
-        assert_eq!(parse_size("10"), None);        // No unit
-        assert_eq!(parse_size("10 10 MB"), None);  // Double number
-        assert_eq!(parse_size("10.5.5MB"), None);  // Multiple decimals
-        assert_eq!(parse_size("10XB"), None);      // Invalid unit
-        assert_eq!(parse_size("abc MB"), None);    // Non-numeric
-        assert_eq!(parse_size("--10MB"), None);    // Double negative
+        assert_eq!(parse_size("MB"), None); // No number
+        assert_eq!(parse_size("10"), None); // No unit
+        assert_eq!(parse_size("10 10 MB"), None); // Double number
+        assert_eq!(parse_size("10.5.5MB"), None); // Multiple decimals
+        assert_eq!(parse_size("10XB"), None); // Invalid unit
+        assert_eq!(parse_size("abc MB"), None); // Non-numeric
+        assert_eq!(parse_size("--10MB"), None); // Double negative
     }
 
     #[test]
@@ -705,7 +816,10 @@ mod tests {
         // cores() should return at least 1
         assert!(cores() >= 1);
         // Should match available_parallelism (or 1 if unavailable)
-        assert_eq!(cores(), std::thread::available_parallelism().map_or(1, |n| n.get()));
+        assert_eq!(
+            cores(),
+            std::thread::available_parallelism().map_or(1, |n| n.get())
+        );
     }
 
     #[test]
@@ -715,7 +829,7 @@ mod tests {
         // Common tools should be detectable or not consistently
         let result = has("true"); // 'true' is a standard POSIX utility
         assert!(result); // Should exist on all POSIX systems
-        
+
         // Call again - should use cache
         let result2 = has("true");
         assert_eq!(result, result2);
@@ -728,10 +842,4 @@ mod tests {
         assert!(threads >= 1);
         assert!(threads <= cores() * 2); // Sanity check
     }
-}
-
-#[test]
-fn dump_best_encoder() {
-    let enc = best_h264_encoder();
-    panic!("BEST ENCODER IS: {}", enc.name);
 }

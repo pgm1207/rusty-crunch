@@ -1,0 +1,135 @@
+.TH RUSTY-CRUNCH 1 "2026-09-29" "rusty-crunch 0.6.0" "User Commands"
+.SH NAME
+rusty-crunch \- fast, local batch media converter
+.SH SYNOPSIS
+.B rusty-crunch
+.RI [ OPTIONS ]
+.RI [ FOLDER ]
+.SH DESCRIPTION
+.B rusty-crunch
+is a terminal front-end that orchestrates FFmpeg, ImageMagick, Ghostscript and
+LibreOffice to batch-convert and compress audio, video, images and documents.
+It can also run as a background agent that watches folders.
+.PP
+With no options it starts an interactive menu. Supplying
+.B FOLDER
+skips the folder picker; combining it with
+.B \-\-yes
+(or an explicit
+.BR \-\-mode )
+runs fully non-interactively.
+.SH OPTIONS
+.TP
+.BR \-y ", " \-\-yes
+Non-interactive mode: use configuration defaults and skip every prompt.
+Requires a FOLDER.
+.TP
+.BI \-\-mode " optimize|upscale|restore"
+Non-interactive action. Defaults to
+.IR optimize .
+.TP
+.BR \-\-recursive " / " \-\-no\-recursive
+Scan (or do not scan) sub-folders, overriding the configuration default.
+.TP
+.B \-\-delete\-originals
+Delete originals after a successful conversion.
+.TP
+.B \-\-force\-recheck
+Re-process files even if they were previously optimized.
+.TP
+.BI \-\-quality " low|medium|high"
+Output quality for optimize mode.
+.TP
+.BR \-\-min\-size " SIZE, " \-\-max\-size " SIZE"
+Only process files within a size range, e.g.
+.IR 10MB " or " 4GB .
+.TP
+.BR \-\-target " HEIGHT, " \-\-preset " anime|movie"
+Upscale target height and profile.
+.TP
+.B \-\-dry\-run
+Simulate the run without converting anything.
+.TP
+.B \-\-json
+Print the conversion summary as JSON.
+.TP
+.B \-\-no\-color
+Disable colored output. The
+.B NO_COLOR
+environment variable and non-TTY output are also honoured.
+.TP
+.B \-\-health\-check
+Verify the required external tools. Exits non-zero if any are missing.
+.TP
+.BR \-\-agent ", " \-\-agent\-stop ", " \-\-agent\-status
+Run, stop or query the background agent.
+.TP
+.BR \-V ", " \-\-version
+Print version and exit.
+.TP
+.BR \-h ", " \-\-help
+Print help and exit.
+.SH FILES
+All state lives in the platform configuration directory, e.g.
+.I ~/.config/rusty-crunch
+on Linux:
+.TP
+.I config.json
+Settings and agent rules.
+.TP
+.I opt_cache.json
+Optimization cache keyed on file size and modification time.
+.TP
+.I history/
+Restore history and original-file backups.
+.TP
+.I agent.pid ", " agent.log
+Agent lifecycle file and log.
+.SH EXIT STATUS
+.TP
+.B 0
+Success.
+.TP
+.B 1
+Runtime error, missing external tool, or one or more files failed to convert.
+.TP
+.B 2
+Command-line usage error.
+.SH EXAMPLES
+.PP
+Interactive:
+.PP
+.nf
+    rusty-crunch
+.fi
+.PP
+Optimize a folder non-interactively and emit JSON:
+.PP
+.nf
+    rusty-crunch --yes --recursive --delete-originals --json ~/Videos
+.fi
+.PP
+Upscale to 1440p with the anime profile:
+.PP
+.nf
+    rusty-crunch --yes --mode upscale --target 1440 --preset anime ~/Anime
+.fi
+.PP
+Undo the last conversion session:
+.PP
+.nf
+    rusty-crunch --mode restore
+.fi
+.SH REQUIREMENTS
+FFmpeg (audio/video), ImageMagick (images), Ghostscript (PDF) and LibreOffice
+(office documents), installed separately. rusty-crunch can auto-install them via
+supported package managers.
+.SH BUGS
+Report bugs at https://github.com/pgm1207/rusty-crunch/issues
+.SH LICENSE
+MIT.
+.SH SEE ALSO
+.BR ffmpeg (1),
+.BR magick (1),
+.BR gs (1),
+.BR libreoffice (1)

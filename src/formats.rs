@@ -34,7 +34,9 @@ impl MediaType {
 
     pub fn formats(self) -> &'static [&'static str] {
         match self {
-            Self::Audio => &["MP3", "WAV", "AIFF", "OGG", "FLAC", "AAC", "M4A", "WMA", "OPUS"],
+            Self::Audio => &[
+                "MP3", "WAV", "AIFF", "OGG", "FLAC", "AAC", "M4A", "WMA", "OPUS",
+            ],
             Self::Video => &["MP4", "MKV", "AVI", "MOV", "WEBM", "FLV", "WMV", "TS"],
             Self::Images => &["PNG", "JPEG", "BMP", "GIF", "WEBP", "TIFF", "AVIF", "ICO"],
             Self::Documents => &["PDF", "DOCX", "XLSX", "PPTX", "ODT", "ODS", "ODP", "EPUB"],
@@ -46,47 +48,47 @@ impl MediaType {
     pub fn compatible_outputs(self, input: &str) -> &'static [&'static str] {
         match self {
             Self::Audio => match input {
-                "WAV"  => &["WAV", "MP3", "OGG", "FLAC", "AAC", "M4A", "OPUS"],
+                "WAV" => &["WAV", "MP3", "OGG", "FLAC", "AAC", "M4A", "OPUS"],
                 "AIFF" => &["AIFF", "MP3", "OGG", "FLAC", "AAC", "M4A", "OPUS"],
                 "FLAC" => &["FLAC", "MP3", "OGG", "AAC", "M4A", "OPUS"],
-                "MP3"  => &["MP3", "OGG", "AAC", "M4A", "OPUS"],
-                "OGG"  => &["OGG", "MP3", "AAC", "M4A", "OPUS"],
-                "AAC"  => &["AAC", "MP3", "OGG", "M4A", "OPUS"],
-                "M4A"  => &["M4A", "MP3", "OGG", "AAC", "OPUS"],
+                "MP3" => &["MP3", "OGG", "AAC", "M4A", "OPUS"],
+                "OGG" => &["OGG", "MP3", "AAC", "M4A", "OPUS"],
+                "AAC" => &["AAC", "MP3", "OGG", "M4A", "OPUS"],
+                "M4A" => &["M4A", "MP3", "OGG", "AAC", "OPUS"],
                 "OPUS" => &["OPUS", "MP3", "OGG", "AAC", "M4A"],
-                "WMA"  => &["WMA", "MP3", "OGG", "FLAC", "AAC", "M4A", "OPUS"],
+                "WMA" => &["WMA", "MP3", "OGG", "FLAC", "AAC", "M4A", "OPUS"],
                 _ => &[],
             },
             Self::Video => match input {
-                "AVI"  => &["AVI", "MP4", "MKV", "WEBM"],
-                "MOV"  => &["MOV", "MP4", "MKV", "WEBM"],
-                "FLV"  => &["FLV", "MP4", "MKV", "WEBM"],
-                "WMV"  => &["WMV", "MP4", "MKV", "WEBM"],
-                "TS"   => &["TS", "MP4", "MKV"],
-                "MP4"  => &["MP4", "MKV", "WEBM"],
-                "MKV"  => &["MKV", "MP4", "WEBM"],
+                "AVI" => &["AVI", "MP4", "MKV", "WEBM"],
+                "MOV" => &["MOV", "MP4", "MKV", "WEBM"],
+                "FLV" => &["FLV", "MP4", "MKV", "WEBM"],
+                "WMV" => &["WMV", "MP4", "MKV", "WEBM"],
+                "TS" => &["TS", "MP4", "MKV"],
+                "MP4" => &["MP4", "MKV", "WEBM"],
+                "MKV" => &["MKV", "MP4", "WEBM"],
                 "WEBM" => &["WEBM", "MP4", "MKV"],
                 _ => &[],
             },
             Self::Images => match input {
-                "BMP"  => &["PNG", "JPEG", "WEBP", "AVIF"],
+                "BMP" => &["PNG", "JPEG", "WEBP", "AVIF"],
                 "TIFF" => &["PNG", "JPEG", "WEBP", "AVIF"],
-                "PNG"  => &["JPEG", "WEBP", "AVIF"],
+                "PNG" => &["JPEG", "WEBP", "AVIF"],
                 "JPEG" => &["WEBP", "AVIF"],
-                "GIF"  => &["WEBP", "AVIF", "PNG"],
+                "GIF" => &["WEBP", "AVIF", "PNG"],
                 "WEBP" => &["JPEG", "AVIF", "PNG"],
                 "AVIF" => &["JPEG", "WEBP", "PNG"],
-                "ICO"  => &["PNG", "WEBP"],
+                "ICO" => &["PNG", "WEBP"],
                 _ => &[],
             },
             Self::Documents => match input {
-                "PDF"  => &["PDF", "PDF (Optimized)"],
+                "PDF" => &["PDF", "PDF (Optimized)"],
                 "DOCX" => &["PDF", "ODT"],
                 "XLSX" => &["PDF", "ODS"],
                 "PPTX" => &["PDF", "ODP"],
-                "ODT"  => &["PDF", "DOCX"],
-                "ODS"  => &["PDF", "XLSX"],
-                "ODP"  => &["PDF", "PPTX"],
+                "ODT" => &["PDF", "DOCX"],
+                "ODS" => &["PDF", "XLSX"],
+                "ODP" => &["PDF", "PPTX"],
                 "EPUB" => &["PDF"],
                 _ => &[],
             },
@@ -110,7 +112,7 @@ impl MediaType {
             if output == "PDF (Optimized)" {
                 return Some(
                     "\u{26a0}  PDF (Optimized) downsamples images to 150 PPI.\n   \
-                     This is irreversible \u{2014} keep a backup if you need full resolution."
+                     This is irreversible \u{2014} keep a backup if you need full resolution.",
                 );
             }
             return None;
@@ -122,12 +124,12 @@ impl MediaType {
             Some(
                 "⚠  You are converting from a lossless format to a lossy one.\n   \
                  This is a one-way operation — you cannot recover the original quality.\n   \
-                 Lossless → lossless (e.g. WAV→FLAC) is recommended unless you need smaller files."
+                 Lossless → lossless (e.g. WAV→FLAC) is recommended unless you need smaller files.",
             )
         } else if !in_lossless && !out_lossless {
             Some(
                 "⚠  Both formats are lossy — each re-encode degrades quality slightly.\n   \
-                 Consider keeping a lossless master copy of your originals."
+                 Consider keeping a lossless master copy of your originals.",
             )
         } else {
             None // lossless → lossless or lossy → lossless (rare but fine)
@@ -246,10 +248,10 @@ mod tests {
         assert!(audio.compatible_outputs("MP3").contains(&"OGG"));
         assert!(audio.compatible_outputs("MP3").contains(&"AAC"));
         assert!(audio.compatible_outputs("MP3").contains(&"MP3")); // Can normalize in place
-        
+
         assert!(audio.compatible_outputs("WAV").contains(&"FLAC"));
         assert!(audio.compatible_outputs("WAV").contains(&"MP3"));
-        
+
         // Invalid input format returns empty slice
         assert!(audio.compatible_outputs("INVALID").is_empty());
     }
@@ -260,11 +262,11 @@ mod tests {
         assert!(video.compatible_outputs("MP4").contains(&"MKV"));
         assert!(video.compatible_outputs("MP4").contains(&"WEBM"));
         assert!(video.compatible_outputs("MP4").contains(&"MP4"));
-        
+
         assert!(video.compatible_outputs("AVI").contains(&"MP4"));
         assert!(video.compatible_outputs("AVI").contains(&"MKV"));
         assert!(video.compatible_outputs("AVI").contains(&"AVI"));
-        
+
         assert!(video.compatible_outputs("INVALID").is_empty());
     }
 
@@ -274,10 +276,10 @@ mod tests {
         assert!(images.compatible_outputs("JPEG").contains(&"WEBP"));
         assert!(images.compatible_outputs("JPEG").contains(&"AVIF"));
         assert!(!images.compatible_outputs("JPEG").contains(&"JPEG"));
-        
+
         assert!(images.compatible_outputs("PNG").contains(&"JPEG"));
         assert!(images.compatible_outputs("PNG").contains(&"WEBP"));
-        
+
         assert!(images.compatible_outputs("INVALID").is_empty());
     }
 
@@ -286,15 +288,15 @@ mod tests {
         let docs = MediaType::Documents;
         assert!(docs.compatible_outputs("DOCX").contains(&"PDF"));
         assert!(docs.compatible_outputs("DOCX").contains(&"ODT"));
-        
+
         assert!(docs.compatible_outputs("XLSX").contains(&"PDF"));
         assert!(docs.compatible_outputs("XLSX").contains(&"ODS"));
-        
+
         // PDF can only go to "PDF (Optimized)"
         let pdf_compat = docs.compatible_outputs("PDF");
         assert!(pdf_compat.contains(&"PDF"));
         assert!(pdf_compat.contains(&"PDF (Optimized)"));
-        
+
         assert!(docs.compatible_outputs("INVALID").is_empty());
     }
 
@@ -304,7 +306,7 @@ mod tests {
         assert!(audio.is_lossless("WAV"));
         assert!(audio.is_lossless("AIFF"));
         assert!(audio.is_lossless("FLAC"));
-        
+
         assert!(!audio.is_lossless("MP3"));
         assert!(!audio.is_lossless("OGG"));
         assert!(!audio.is_lossless("AAC"));
@@ -328,7 +330,7 @@ mod tests {
         assert!(images.is_lossless("BMP"));
         assert!(images.is_lossless("TIFF"));
         assert!(images.is_lossless("ICO"));
-        
+
         assert!(!images.is_lossless("JPEG"));
         assert!(!images.is_lossless("WEBP"));
         assert!(!images.is_lossless("AVIF"));
@@ -347,24 +349,24 @@ mod tests {
         assert!(docs.is_lossless("ODS"));
         assert!(docs.is_lossless("ODP"));
         assert!(docs.is_lossless("EPUB"));
-        
+
         assert!(!docs.is_lossless("PDF (Optimized)"));
     }
 
     #[test]
     fn test_lossy_warning_audio() {
         let audio = MediaType::Audio;
-        
+
         // Lossless to lossy should have warning
         assert!(audio.lossy_warning("WAV", "MP3").is_some());
         assert!(audio.lossy_warning("FLAC", "OGG").is_some());
-        
+
         // Lossy to lossy should have warning
         assert!(audio.lossy_warning("MP3", "OGG").is_some());
-        
+
         // Lossless to lossless should not
         assert!(audio.lossy_warning("WAV", "FLAC").is_none());
-        
+
         // Lossy to lossless should not (rare but valid)
         assert!(audio.lossy_warning("MP3", "FLAC").is_none());
     }
@@ -380,14 +382,14 @@ mod tests {
     #[test]
     fn test_lossy_warning_images() {
         let images = MediaType::Images;
-        
+
         // Lossless to lossy
         assert!(images.lossy_warning("PNG", "JPEG").is_some());
         assert!(images.lossy_warning("BMP", "AVIF").is_some());
-        
+
         // Lossy to lossy
         assert!(images.lossy_warning("JPEG", "WEBP").is_some());
-        
+
         // Lossless to lossless
         assert!(images.lossy_warning("PNG", "BMP").is_none());
     }
@@ -395,12 +397,12 @@ mod tests {
     #[test]
     fn test_lossy_warning_documents() {
         let docs = MediaType::Documents;
-        
+
         // PDF (Optimized) downsamples to 150 PPI (lossy)
         let warning = docs.lossy_warning("PDF", "PDF (Optimized)");
         assert!(warning.is_some());
         assert!(warning.unwrap().contains("150 PPI"));
-        
+
         // Other document conversions
         assert!(docs.lossy_warning("DOCX", "PDF").is_none());
         assert!(docs.lossy_warning("XLSX", "ODS").is_none());
@@ -410,13 +412,13 @@ mod tests {
     fn test_display_item() {
         assert!(MediaType::Audio.display_item().contains("Audio"));
         assert!(MediaType::Audio.display_item().contains("🎵"));
-        
+
         assert!(MediaType::Video.display_item().contains("Video"));
         assert!(MediaType::Video.display_item().contains("🎬"));
-        
+
         assert!(MediaType::Images.display_item().contains("Images"));
         assert!(MediaType::Images.display_item().contains("🖼️ "));
-        
+
         assert!(MediaType::Documents.display_item().contains("Documents"));
         assert!(MediaType::Documents.display_item().contains("📄"));
     }
@@ -441,12 +443,21 @@ mod tests {
         let recs = recommended_conversions();
         for (media_type, input, output) in recs {
             // Input should be in the mediatype's formats
-            assert!(media_type.formats().contains(input), 
-                "Input {} not in {:?} formats", input, media_type);
-            
+            assert!(
+                media_type.formats().contains(input),
+                "Input {} not in {:?} formats",
+                input,
+                media_type
+            );
+
             // Output should be in compatible outputs
-            assert!(media_type.compatible_outputs(input).contains(output),
-                "Output {} not compatible with {} for {:?}", output, input, media_type);
+            assert!(
+                media_type.compatible_outputs(input).contains(output),
+                "Output {} not compatible with {} for {:?}",
+                output,
+                input,
+                media_type
+            );
         }
     }
 
@@ -465,9 +476,20 @@ mod tests {
             let compatible = audio.compatible_outputs(fmt);
             // Every format should have some compatible outputs (or empty for invalid)
             // but documented ones should have outputs
-            matches!(fmt, &"MP3" | &"WAV" | &"FLAC" | &"OGG" | &"AAC" | &"M4A" | &"OPUS" | &"AIFF" | &"WMA");
-            if ["MP3", "WAV", "FLAC", "OGG", "AAC", "M4A", "OPUS", "AIFF", "WMA"].contains(fmt) {
-                assert!(!compatible.is_empty(), "Format {} has no compatible outputs", fmt);
+            matches!(
+                fmt,
+                &"MP3" | &"WAV" | &"FLAC" | &"OGG" | &"AAC" | &"M4A" | &"OPUS" | &"AIFF" | &"WMA"
+            );
+            if [
+                "MP3", "WAV", "FLAC", "OGG", "AAC", "M4A", "OPUS", "AIFF", "WMA",
+            ]
+            .contains(fmt)
+            {
+                assert!(
+                    !compatible.is_empty(),
+                    "Format {} has no compatible outputs",
+                    fmt
+                );
             }
         }
     }
