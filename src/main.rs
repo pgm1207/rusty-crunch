@@ -95,6 +95,18 @@ struct Cli {
     /// Upscale profile for --mode upscale: anime or movie
     #[arg(long, value_name = "PROFILE", value_parser = ["anime", "movie"])]
     preset: Option<String>,
+
+    /// Check for a newer release and exit
+    #[arg(long = "check-update")]
+    check_update: bool,
+
+    /// Download and install the latest release, then exit
+    #[arg(long = "self-update")]
+    self_update: bool,
+
+    /// List supported input/output formats and exit
+    #[arg(long = "list-formats")]
+    list_formats: bool,
 }
 
 fn main() -> Result<()> {
@@ -116,6 +128,15 @@ fn main() -> Result<()> {
     }
     if cli.health_check {
         return run_health_check();
+    }
+    if cli.list_formats {
+        return list_formats();
+    }
+    if cli.check_update {
+        return check_update_cmd();
+    }
+    if cli.self_update {
+        return self_update_cmd();
     }
 
     // Non-interactive path: `--yes` (or an explicit `--mode`).
@@ -1166,6 +1187,60 @@ fn check_for_updates() -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// `--list-formats`: print every supported type and its I/O formats.
+fn list_formats() -> Result<()> {
+    println!();
+    for mt in formats::MediaType::ALL {
+        println!("  {}  {}", mt.icon(), style(mt.label()).bold());
+        println!("     input : {}", mt.formats().join(", "));
+        let mut outs: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+        for i in mt.formats() {
+            for o in mt.compatible_outputs(i) {
+                outs.insert(o);
+            }
+        }
+        println!(
+            "     output: {}",
+            outs.into_iter().collect::<Vec<_>>().join(", ")
+        );
+    }
+    println!();
+    Ok(())
+}
+
+/// `--check-update`: report a newer release without installing it.
+fn check_update_cmd() -> Result<()> {
+    let current = env!("CARGO_PKG_VERSION");
+    match util::check_for_update() {
+        Ok(Some(v)) => println!("Update available: v{v} (current v{current})"),
+        Ok(None) => println!("Already up to date (v{current})"),
+        Err(e) => {
+            eprintln!("Update check failed: {e}");
+            std::process::exit(1);
+        }
+    }
+    Ok(())
+}
+
+/// `--self-update`: download and install the latest release.
+fn self_update_cmd() -> Result<()> {
+    let current = env!("CARGO_PKG_VERSION");
+    match util::check_for_update() {
+        Ok(Some(v)) => {
+            println!("Updating v{current} \u{2192} v{v}\u{2026}");
+            util::download_and_install_update(&v)
+        }
+        Ok(None) => {
+            println!("Already up to date (v{current})");
+            Ok(())
+        }
+        Err(e) => {
+            eprintln!("Update check failed: {e}");
+            std::process::exit(1);
+        }
+    }
 }
 
 fn run_health_check() -> Result<()> {

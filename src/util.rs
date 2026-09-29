@@ -122,6 +122,29 @@ pub fn parse_size(s: &str) -> Option<u64> {
     Some((num * multiplier as f64) as u64)
 }
 
+/// VAAPI render node: honours `RUSTY_CRUNCH_VAAPI_DEVICE`, otherwise the first
+/// `/dev/dri/renderD*`, otherwise `/dev/dri/renderD128` (the common default).
+pub fn vaapi_device() -> String {
+    if let Ok(p) = std::env::var("RUSTY_CRUNCH_VAAPI_DEVICE") {
+        let p = p.trim();
+        if !p.is_empty() {
+            return p.to_string();
+        }
+    }
+    if let Ok(entries) = std::fs::read_dir("/dev/dri") {
+        let mut nodes: Vec<String> = entries
+            .flatten()
+            .filter_map(|e| e.file_name().into_string().ok())
+            .filter(|n| n.starts_with("renderD"))
+            .collect();
+        nodes.sort();
+        if let Some(n) = nodes.first() {
+            return format!("/dev/dri/{n}");
+        }
+    }
+    "/dev/dri/renderD128".to_string()
+}
+
 // ── Auto-update ───────────────────────────────────────────────────────────────────────
 
 /// Check GitHub for a newer release of rusty-crunch.
@@ -536,11 +559,12 @@ fn detect_h264_encoder() -> H264Encoder {
         }
 
         // Mesa compatible GPUs (AMD/Intel on Linux) via VAAPI.
-        let path = std::path::Path::new("/dev/dri/renderD128");
+        let vaapi = vaapi_device();
+        let path = std::path::Path::new(&vaapi);
         if path.exists() {
             let va_args = [
                 "-vaapi_device",
-                "/dev/dri/renderD128",
+                vaapi.as_str(),
                 "-vf",
                 "format=nv12,hwupload",
             ];

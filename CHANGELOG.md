@@ -17,6 +17,10 @@ All notable changes to this project will be documented in this file.
 - Makefile (`make check` / `test` / `lint` / `install` / `package`), a CI
   workflow, GitHub issue templates, `CONTRIBUTING.md`, `SCOPE.md`, and a man page.
 - `--health-check` now exits non-zero when a required tool is missing.
+- `--check-update` and `--self-update` for scriptable updates, and
+  `--list-formats` to print every supported input/output format.
+- `RUSTY_CRUNCH_VAAPI_DEVICE` to override the VAAPI render node, which is now
+  auto-detected instead of hardcoding `/dev/dri/renderD128`.
 
 ### Fixed
 

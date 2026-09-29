@@ -121,6 +121,9 @@ rusty-crunch --mode restore
 | `--dry-run` | Simulate the run without converting anything. |
 | `--json` | Print the conversion summary as JSON. |
 | `--no-color` | Disable colored output (also honours `NO_COLOR`). |
+| `--list-formats` | List supported input/output formats and exit. |
+| `--check-update` | Report a newer release without installing it. |
+| `--self-update` | Download and install the latest release (checksum-verified). |
 | `--health-check` | Verify required external tools (exit 1 if missing). |
 | `--agent` / `--agent-stop` / `--agent-status` | Background agent control. |
 | `-V, --version`, `-h, --help` | Version / help. |
@@ -160,6 +163,14 @@ All state lives under `~/.config/rusty-crunch/` (Linux), `~/Library/Application 
 | `history/session_<unix>.json` | Restore history for the last session. |
 | `history/backups/…` | Original files kept for restore. |
 | `agent.pid` / `agent.log` | Agent lifecycle + log. |
+
+## Environment variables
+
+| Variable | Effect |
+|----------|--------|
+| `NO_COLOR` | Disable colored output (any non-empty value). |
+| `RUSTY_CRUNCH_VAAPI_DEVICE` | Override the VAAPI render node (e.g. `/dev/dri/renderD129`). |
+| `INSTALL_DIR` | Target directory used by `install.sh` (default `/usr/local/bin`). |
 
 ## Exit codes
 

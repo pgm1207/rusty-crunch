@@ -273,12 +273,13 @@ async fn build_and_run_video(
     cmd.args(["-hide_banner", "-loglevel", "error"]);
     cmd.args(["-threads", &threads_str, "-filter_threads", &threads_str]);
     if use_vaapi {
-        cmd.args(["-vaapi_device", "/dev/dri/renderD128"]);
+        let vaapi = util::vaapi_device();
+        cmd.args(["-vaapi_device", vaapi.as_str()]);
         cmd.args([
             "-hwaccel",
             "vaapi",
             "-hwaccel_device",
-            "/dev/dri/renderD128",
+            vaapi.as_str(),
             "-hwaccel_output_format",
             "vaapi",
         ]);
