@@ -124,6 +124,11 @@ rusty-crunch --mode restore
 | `--list-formats` | List supported input/output formats and exit. |
 | `--check-update` | Report a newer release without installing it. |
 | `--self-update` | Download and install the latest release (checksum-verified). |
+| `--history` | List recorded conversion sessions (newest first). |
+| `--stats` | Show cumulative files converted and space reclaimed. |
+| `--notify` | Send a desktop notification when a batch finishes. |
+| `-v, --verbose` | Verbose diagnostics (also written to the log file). |
+| `-q, --quiet` | Suppress non-essential output. |
 | `--health-check` | Verify required external tools (exit 1 if missing). |
 | `--agent` / `--agent-stop` / `--agent-status` | Background agent control. |
 | `-V, --version`, `-h, --help` | Version / help. |
@@ -169,7 +174,9 @@ All state lives under `~/.config/rusty-crunch/` (Linux), `~/Library/Application 
 | Variable | Effect |
 |----------|--------|
 | `NO_COLOR` | Disable colored output (any non-empty value). |
+| `RUSTY_CRUNCH_CONFIG` | Override the config file path (also relocates cache/history/log). |
 | `RUSTY_CRUNCH_VAAPI_DEVICE` | Override the VAAPI render node (e.g. `/dev/dri/renderD129`). |
+| `RUSTY_CRUNCH_VERSION` / `RUSTY_CRUNCH_REPO` | Pin the version / repo used by `install.sh`. |
 | `INSTALL_DIR` | Target directory used by `install.sh` (default `/usr/local/bin`). |
 
 ## Exit codes

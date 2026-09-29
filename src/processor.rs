@@ -105,6 +105,19 @@ pub fn run(job: &Job) -> Result<ConversionSummary> {
     };
     let same_ext = input_ext == output_ext;
 
+    crate::util::log_event(
+        "INFO",
+        &format!(
+            "job start: {} -> {} in {} (recursive={}, delete={}, dry_run={})",
+            job.input_fmt,
+            job.output_fmt,
+            job.folder.display(),
+            job.recursive,
+            job.delete_originals,
+            job.dry_run
+        ),
+    );
+
     // Create output sub-folder before any parallel work
     if let Some(sub) = job.output_subfolder {
         std::fs::create_dir_all(job.folder.join(sub))?;
@@ -495,14 +508,19 @@ pub fn run(job: &Job) -> Result<ConversionSummary> {
                             ok_count.fetch_add(1, Ordering::Relaxed);
                         }
                         Err(e) => {
+                            let err_msg = format!("{e}");
                             pb.suspend(|| {
                                 eprintln!(
                                     "  {} {}: {}",
                                     style("✗").red().bold(),
                                     style(name.as_ref()).dim(),
-                                    style(e).red()
+                                    style(&err_msg).red()
                                 );
                             });
+                            crate::util::log_event(
+                                "ERROR",
+                                &format!("{}: {}", input_path.display(), err_msg),
+                            );
                             // Clean up partial output (but not for in-place where output IS the input)
                             if !same_ext {
                                 let _ = std::fs::remove_file(&final_output_path);
@@ -538,6 +556,8 @@ pub fn run(job: &Job) -> Result<ConversionSummary> {
             session_id,
             created_unix: session_id,
             entries,
+            files_converted: ok_count.load(Ordering::Relaxed),
+            bytes_saved: saved_bytes.load(Ordering::Relaxed),
         });
     }
 
@@ -604,6 +624,19 @@ pub fn run(job: &Job) -> Result<ConversionSummary> {
     }
     println!("  {}", style("─".repeat(50)).dim());
 
+    crate::util::log_event(
+        "INFO",
+        &format!(
+            "job done: {} -> {} — {} converted, {} skipped, {} failed, {} saved",
+            job.input_fmt,
+            job.output_fmt,
+            ok,
+            skipped,
+            errs,
+            crate::util::human_bytes(saved)
+        ),
+    );
+
     Ok(ConversionSummary {
         media_type: format!("{:?}", job.media_type),
         input_format: job.input_fmt.to_string(),
@@ -636,13 +669,16 @@ struct HistoryRecord {
     session_id: u64,
     created_unix: u64,
     entries: Vec<HistoryEntry>,
+    /// Files converted in this session (0 for records written by older versions).
+    #[serde(default)]
+    files_converted: usize,
+    /// Bytes reclaimed in this session (0 for older records).
+    #[serde(default)]
+    bytes_saved: u64,
 }
 
 fn history_dir() -> PathBuf {
-    dirs::config_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("rusty-crunch")
-        .join("history")
+    crate::util::config_dir().join("history")
 }
 
 fn history_file_path(session_id: u64) -> PathBuf {
@@ -744,6 +780,113 @@ pub fn restore_last_session() -> Result<()> {
     Ok(())
 }
 
+/// `--history`: list conversion sessions, newest first.
+pub fn print_history() -> Result<()> {
+    let dir = history_dir();
+    let mut files: Vec<PathBuf> = match std::fs::read_dir(&dir) {
+        Ok(rd) => rd
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.extension().map(|x| x == "json").unwrap_or(false))
+            .collect(),
+        Err(_) => Vec::new(),
+    };
+    files.sort();
+
+    if files.is_empty() {
+        println!("\n  {} No conversion history yet.\n", style("⚠").yellow());
+        return Ok(());
+    }
+
+    println!(
+        "\n  {} Conversion history ({} session{})\n",
+        style("📜").cyan(),
+        files.len(),
+        if files.len() == 1 { "" } else { "s" },
+    );
+    for path in files.iter().rev() {
+        if let Ok(s) = std::fs::read_to_string(path) {
+            if let Ok(rec) = serde_json::from_str::<HistoryRecord>(&s) {
+                println!(
+                    "  {} session {} — {} converted, {} backup(s), {} saved  {}",
+                    style("•").dim(),
+                    style(rec.session_id).cyan().bold(),
+                    rec.files_converted,
+                    rec.entries.len(),
+                    style(crate::util::human_bytes(rec.bytes_saved)).green(),
+                    style(fmt_unix(rec.created_unix)).dim(),
+                );
+            }
+        }
+    }
+    println!();
+    Ok(())
+}
+
+/// `--stats`: cumulative totals across all recorded sessions.
+pub fn print_stats() -> Result<()> {
+    let dir = history_dir();
+    let (mut sessions, mut files, mut saved) = (0usize, 0usize, 0u64);
+    if let Ok(rd) = std::fs::read_dir(&dir) {
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.extension().map(|x| x == "json").unwrap_or(false) {
+                if let Ok(s) = std::fs::read_to_string(&p) {
+                    if let Ok(rec) = serde_json::from_str::<HistoryRecord>(&s) {
+                        sessions += 1;
+                        files += rec.files_converted;
+                        saved = saved.saturating_add(rec.bytes_saved);
+                    }
+                }
+            }
+        }
+    }
+
+    println!("\n  {} Cumulative stats\n", style("📊").cyan());
+    if sessions == 0 {
+        println!("  {} No conversions recorded yet.\n", style("⚠").yellow());
+    } else {
+        println!(
+            "  {} {} session{}",
+            style("•").dim(),
+            style(sessions).cyan().bold(),
+            if sessions == 1 { "" } else { "s" },
+        );
+        println!(
+            "  {} {} file{} converted",
+            style("•").dim(),
+            style(files).cyan().bold(),
+            if files == 1 { "" } else { "s" },
+        );
+        println!(
+            "  {} {} reclaimed",
+            style("•").dim(),
+            style(crate::util::human_bytes(saved)).green().bold(),
+        );
+        println!();
+    }
+    Ok(())
+}
+
+/// Format a Unix timestamp as `YYYY-MM-DD HH:MM:SS UTC` (no external crates).
+fn fmt_unix(ts: u64) -> String {
+    let days = (ts / 86_400) as i64;
+    let secs = (ts % 86_400) as u32;
+    // Civil-from-days algorithm (Howard Hinnant).
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    let (hh, mm, ss) = (secs / 3600, (secs % 3600) / 60, secs % 60);
+    format!("{y:04}-{m:02}-{d:02} {hh:02}:{mm:02}:{ss:02} UTC")
+}
+
 // ── Disk space check ────────────────────────────────────────────────
 /// Simple heuristic: warn if estimated output would be too close to input size.
 /// (Most conversions should reduce size; if estimated output is >80% of input, space might be tight.)
@@ -810,10 +953,7 @@ impl CacheEntry {
 }
 
 fn opt_cache_path() -> PathBuf {
-    dirs::config_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("rusty-crunch")
-        .join("opt_cache.json")
+    crate::util::config_dir().join("opt_cache.json")
 }
 
 fn load_opt_cache() -> HashMap<PathBuf, CacheEntry> {

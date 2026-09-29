@@ -6,6 +6,7 @@ use serde_json::Value;
 #[cfg(target_os = "windows")]
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 /// Number of available CPU cores (cached).
@@ -143,6 +144,113 @@ pub fn vaapi_device() -> String {
         }
     }
     "/dev/dri/renderD128".to_string()
+}
+
+// ── Logging & notifications ───────────────────────────────────────────────────────────
+
+static VERBOSE: AtomicBool = AtomicBool::new(false);
+static QUIET: AtomicBool = AtomicBool::new(false);
+
+/// Enable verbose diagnostics (also echoed to stderr).
+pub fn set_verbose(v: bool) {
+    VERBOSE.store(v, Ordering::Relaxed);
+}
+
+/// Suppress non-essential stdout.
+pub fn set_quiet(v: bool) {
+    QUIET.store(v, Ordering::Relaxed);
+}
+
+pub fn is_verbose() -> bool {
+    VERBOSE.load(Ordering::Relaxed)
+}
+
+pub fn is_quiet() -> bool {
+    QUIET.load(Ordering::Relaxed)
+}
+
+pub fn config_dir() -> std::path::PathBuf {
+    // Allow full isolation (used by tests): RUSTY_CRUNCH_CONFIG=<dir>/config.json
+    if let Some(custom) = std::env::var_os("RUSTY_CRUNCH_CONFIG") {
+        let p = std::path::PathBuf::from(custom);
+        if let Some(parent) = p.parent() {
+            if !parent.as_os_str().is_empty() {
+                return parent.to_path_buf();
+            }
+        }
+    }
+    dirs::config_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join("rusty-crunch")
+}
+
+/// Where the diagnostics log is written.
+pub fn log_path() -> std::path::PathBuf {
+    config_dir().join("rusty-crunch.log")
+}
+
+/// Append a timestamped line to the log file, rotating at ~1 MiB.
+/// Verbose mode (and any `ERROR`) also echoes to stderr.
+pub fn log_event(level: &str, msg: &str) {
+    use std::io::Write;
+
+    let path = log_path();
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    if let Ok(meta) = std::fs::metadata(&path) {
+        if meta.len() > 1_000_000 {
+            let _ = std::fs::rename(&path, path.with_extension("log.1"));
+        }
+    }
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
+        let _ = writeln!(f, "[{ts}] {level} {msg}");
+    }
+    if is_verbose() || level == "ERROR" {
+        eprintln!("  {level}: {msg}");
+    }
+}
+
+/// Best-effort desktop notification (no-op if the platform tool is missing).
+pub fn notify(title: &str, body: &str) {
+    #[cfg(target_os = "linux")]
+    {
+        let _ = Command::new("notify-send").arg(title).arg(body).status();
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let esc = |s: &str| s.replace('\\', "\\\\").replace('"', "\\\"");
+        let script = format!(
+            "display notification \"{}\" with title \"{}\"",
+            esc(body),
+            esc(title)
+        );
+        let _ = Command::new("osascript").args(["-e", &script]).status();
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let esc = |s: &str| s.replace('\'', "''");
+        let script = format!(
+            "[reflection.assembly]::loadwithpartialname('System.Windows.Forms') | Out-Null; [System.Windows.Forms.MessageBox]::Show('{}','{}')",
+            esc(body),
+            esc(title)
+        );
+        let _ = Command::new("powershell")
+            .args(["-NoProfile", "-Command", &script])
+            .status();
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+    {
+        let _ = (title, body);
+    }
 }
 
 // ── Auto-update ───────────────────────────────────────────────────────────────────────

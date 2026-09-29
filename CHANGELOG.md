@@ -19,6 +19,14 @@ All notable changes to this project will be documented in this file.
 - `--health-check` now exits non-zero when a required tool is missing.
 - `--check-update` and `--self-update` for scriptable updates, and
   `--list-formats` to print every supported input/output format.
+- `--history` and `--stats` to review recorded sessions and cumulative savings.
+- `--notify` desktop notifications when a batch finishes, and `-v/--verbose` /
+  `-q/--quiet` with an append-only log at `rusty-crunch.log`.
+- `RUSTY_CRUNCH_CONFIG` to relocate the config file (and cache/history/log).
+- The Settings menu now exposes the **conflict strategy** (skip/overwrite/rename).
+- Verification and packaging: hermetic CLI integration tests (`tests/cli.rs`)
+  using path shims, a releases `SHA256SUMS` file, and an installer with
+  checksum verification, version pinning, and PATH setup.
 - `RUSTY_CRUNCH_VAAPI_DEVICE` to override the VAAPI render node, which is now
   auto-detected instead of hardcoding `/dev/dri/renderD128`.
 

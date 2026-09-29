@@ -58,6 +58,21 @@ Disable colored output. The
 .B NO_COLOR
 environment variable and non-TTY output are also honoured.
 .TP
+.B \-\-history
+List recorded conversion sessions, newest first.
+.TP
+.B \-\-stats
+Show cumulative files converted and space reclaimed.
+.TP
+.B \-\-notify
+Send a desktop notification when a batch finishes.
+.TP
+.BR \-v ", " \-\-verbose
+Verbose diagnostics (also written to the log file).
+.TP
+.BR \-q ", " \-\-quiet
+Suppress non-essential output.
+.TP
 .B \-\-health\-check
 Verify the required external tools. Exits non-zero if any are missing.
 .TP
@@ -69,6 +84,23 @@ Print version and exit.
 .TP
 .BR \-h ", " \-\-help
 Print help and exit.
+.TP
+.BR \-\-list\-formats
+List every supported input/output format and exit.
+.TP
+.BR \-\-check\-update " / " \-\-self\-update
+Report, or download and install, a newer release (checksum-verified).
+.SH ENVIRONMENT
+.TP
+.B NO_COLOR
+Disable colored output when set to any non-empty value.
+.TP
+.B RUSTY_CRUNCH_CONFIG
+Override the config file path (also relocates the cache, history and log).
+.TP
+.B RUSTY_CRUNCH_VAAPI_DEVICE
+Override the VAAPI render node (default: the first
+.IR /dev/dri/renderD* ).
 .SH FILES
 All state lives in the platform configuration directory, e.g.
 .I ~/.config/rusty-crunch

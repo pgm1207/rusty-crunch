@@ -358,7 +358,6 @@ pub fn select_output_destination() -> Result<Option<String>> {
 }
 
 /// Ask user how to handle existing output files.
-#[allow(dead_code)]
 pub fn select_conflict_strategy() -> Result<crate::config::ConflictStrategy> {
     use crate::config::ConflictStrategy;
 

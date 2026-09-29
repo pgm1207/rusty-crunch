@@ -142,6 +142,12 @@ impl Default for Config {
 }
 
 fn config_path() -> PathBuf {
+    if let Some(custom) = std::env::var_os("RUSTY_CRUNCH_CONFIG") {
+        let custom = PathBuf::from(custom);
+        if !custom.as_os_str().is_empty() {
+            return custom;
+        }
+    }
     let dir = dirs::config_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join("rusty-crunch");
@@ -306,6 +312,8 @@ pub fn edit_settings() -> Result<()> {
         2 => ThreadMode::Saver,
         _ => ThreadMode::Full,
     };
+
+    cfg.conflict_strategy = crate::prompt::select_conflict_strategy()?;
 
     save(&cfg)?;
 

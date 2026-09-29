@@ -107,6 +107,26 @@ struct Cli {
     /// List supported input/output formats and exit
     #[arg(long = "list-formats")]
     list_formats: bool,
+
+    /// Print recorded conversion history and exit
+    #[arg(long)]
+    history: bool,
+
+    /// Print cumulative conversion statistics and exit
+    #[arg(long)]
+    stats: bool,
+
+    /// Send a desktop notification when a batch finishes
+    #[arg(long)]
+    notify: bool,
+
+    /// Verbose diagnostics (also written to the log file)
+    #[arg(short = 'v', long)]
+    verbose: bool,
+
+    /// Suppress non-essential output
+    #[arg(short = 'q', long)]
+    quiet: bool,
 }
 
 fn main() -> Result<()> {
@@ -116,6 +136,13 @@ fn main() -> Result<()> {
     if cli.no_color || std::env::var_os("NO_COLOR").is_some() || !console::user_attended() {
         console::set_colors_enabled(false);
     }
+
+    util::set_verbose(cli.verbose);
+    util::set_quiet(cli.quiet);
+    util::log_event(
+        "INFO",
+        &format!("rusty-crunch v{} started", env!("CARGO_PKG_VERSION")),
+    );
 
     if cli.agent {
         return agent::run_headless();
@@ -138,6 +165,12 @@ fn main() -> Result<()> {
     if cli.self_update {
         return self_update_cmd();
     }
+    if cli.history {
+        return processor::print_history();
+    }
+    if cli.stats {
+        return processor::print_stats();
+    }
 
     // Non-interactive path: `--yes` (or an explicit `--mode`).
     if cli.yes || cli.mode.is_some() {
@@ -146,8 +179,10 @@ fn main() -> Result<()> {
 
     loop {
         let display_mode = config::load().display_mode;
-        maybe_clear(display_mode);
-        banner();
+        if !util::is_quiet() {
+            maybe_clear(display_mode);
+            banner();
+        }
 
         let agent_label = if cfg!(target_os = "macos") {
             "🤖 Agent Mode [ALPHA]"
@@ -405,8 +440,10 @@ fn run_noninteractive(cli: &Cli) -> Result<()> {
     }
 
     if !cli.dry_run && summaries.iter().any(|s| s.files_failed > 0) {
+        maybe_notify(cli, &summaries);
         std::process::exit(1);
     }
+    maybe_notify(cli, &summaries);
     Ok(())
 }
 
@@ -737,6 +774,7 @@ fn run_crunch(cli: &Cli, forced_mode: Option<prompt::CrunchMode>) -> Result<()> 
         }
     }
 
+    maybe_notify(cli, &summaries);
     println!("\n  {} Done!", style("✔").green().bold());
     Ok(())
 }
@@ -914,6 +952,7 @@ fn run_recommended_upscale(cli: &Cli) -> Result<()> {
         }
     }
 
+    maybe_notify(cli, &summaries);
     println!(
         "\n  {} Recommended Upscale complete!",
         style("✔").green().bold()
@@ -960,6 +999,26 @@ fn maybe_clear(mode: config::DisplayMode) {
             }
         }
     }
+}
+
+/// Send a desktop notification summarising a finished batch, if requested.
+fn maybe_notify(cli: &Cli, summaries: &[processor::ConversionSummary]) {
+    if !cli.notify {
+        return;
+    }
+    let converted: usize = summaries.iter().map(|s| s.files_converted).sum();
+    if converted == 0 {
+        return;
+    }
+    let failed: usize = summaries.iter().map(|s| s.files_failed).sum();
+    let saved: u64 = summaries.iter().map(|s| s.bytes_saved).sum();
+    util::notify(
+        "rusty-crunch",
+        &format!(
+            "{converted} file(s) converted, {failed} failed, {} reclaimed",
+            util::human_bytes(saved)
+        ),
+    );
 }
 
 /// Pause so the user can read results before the screen clears.
@@ -1141,6 +1200,7 @@ fn run_recommended_crunch(cli: &Cli) -> Result<()> {
         }
     }
 
+    maybe_notify(cli, &summaries);
     println!(
         "\n  {} Recommended Crunch complete!",
         style("✔").green().bold(),
