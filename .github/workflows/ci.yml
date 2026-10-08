@@ -33,10 +33,32 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Clippy
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --all-targets --locked -- -D warnings
 
       - name: Tests
-        run: cargo test --all
+        run: cargo test --all --locked
 
       - name: Release build
-        run: cargo build --release
+        run: cargo build --release --locked
+
+  cross-platform:
+    name: Compile & test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+      - name: Compile and test
+        run: cargo test --all --locked
+      - name: Release compilation
+        run: cargo build --release --locked
