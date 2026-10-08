@@ -869,6 +869,7 @@ fn process_file(path: &Path, rule: &AgentRule, rt: &tokio::runtime::Runtime) -> 
             keep_metadata: true,
             video_scale: crate::processor::VideoScale::Original,
             image_scale: crate::processor::ImageScale::Original,
+            restore_backup: None,
         },
     )) {
         Ok(()) => {
