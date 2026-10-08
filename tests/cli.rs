@@ -332,3 +332,50 @@ fn converter_publishes_completed_output_without_deleting_input() {
         b"source image"
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn inplace_pdf_optimization_is_reversible() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let s = Scratch::new("undo-inplace");
+    let folder = s.path().join("media");
+    let tools = s.path().join("fake-bin");
+    fs::create_dir_all(&folder).unwrap();
+    fs::create_dir_all(&tools).unwrap();
+    let pdf = folder.join("document.pdf");
+    let original = vec![b'x'; 100];
+    fs::write(&pdf, &original).unwrap();
+
+    let gs = tools.join("gs");
+    fs::write(&gs, b"#!/bin/sh\nfor arg in \"$@\"; do\n case \"$arg\" in\n -sOutputFile=*) output=${arg#-sOutputFile=} ;;\n esac\ndone\nprintf optimized > \"$output\"\n").unwrap();
+    let libreoffice = tools.join("libreoffice");
+    fs::write(&libreoffice, b"#!/bin/sh\nexit 0\n").unwrap();
+    for path in [&gs, &libreoffice] {
+        let mut permissions = fs::metadata(path).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(path, permissions).unwrap();
+    }
+
+    let inherited_path = std::env::var_os("PATH").unwrap_or_default();
+    let mut paths = vec![tools.clone()];
+    paths.extend(std::env::split_paths(&inherited_path));
+    let full_path = std::env::join_paths(paths).unwrap();
+
+    let convert = cmd(&s)
+        .args(["--yes", "--delete-originals", "--threads", "1"])
+        .arg(&folder)
+        .env("PATH", &full_path)
+        .output()
+        .unwrap();
+    assert!(convert.status.success(), "{}", String::from_utf8_lossy(&convert.stderr));
+    assert_eq!(fs::read(&pdf).unwrap(), b"optimized");
+
+    let undo = cmd(&s)
+        .args(["--mode", "restore"])
+        .env("PATH", &full_path)
+        .output()
+        .unwrap();
+    assert!(undo.status.success(), "{}", String::from_utf8_lossy(&undo.stderr));
+    assert_eq!(fs::read(&pdf).unwrap(), original);
+}
