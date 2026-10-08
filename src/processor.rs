@@ -221,7 +221,7 @@ fn run_with_index(job: &Job, index: Option<&FileIndex>) -> Result<ConversionSumm
             .filter_entry(|e| {
                 output_root
                     .as_ref()
-                    .map_or(true, |root| !e.path().starts_with(root))
+                    .is_none_or(|root| !e.path().starts_with(root))
             })
             .filter_map(|e| e.ok())
             .filter(|e| e.file_type().is_file())
@@ -234,8 +234,8 @@ fn run_with_index(job: &Job, index: Option<&FileIndex>) -> Result<ConversionSumm
         .filter(|path| {
             match path.metadata() {
                 Ok(meta) => {
-                    job.min_file_size.map_or(true, |min| meta.len() >= min)
-                        && job.max_file_size.map_or(true, |max| meta.len() <= max)
+                    job.min_file_size.is_none_or(|min| meta.len() >= min)
+                        && job.max_file_size.is_none_or(|max| meta.len() <= max)
                 }
                 Err(_) => false,
             }
@@ -1181,7 +1181,7 @@ pub fn index_files(
         .filter_entry(|e| {
             output_root
                 .as_ref()
-                .map_or(true, |root| !e.path().starts_with(root))
+                .is_none_or(|root| !e.path().starts_with(root))
         })
         .filter_map(|e| e.ok())
         .filter(|e| e.file_type().is_file())
