@@ -279,7 +279,11 @@ fn main() -> Result<()> {
             Some(5) => {
                 let view = Select::with_theme(&ColorfulTheme::default())
                     .with_prompt("View activity")
-                    .items(&["📜 Conversion history", "📊 Cumulative statistics", "↩ Back"])
+                    .items(&[
+                        "📜 Conversion history",
+                        "📊 Cumulative statistics",
+                        "↩ Back",
+                    ])
                     .default(0)
                     .interact_opt()?;
                 match view {
@@ -435,9 +439,7 @@ fn run_noninteractive(cli: &Cli) -> Result<()> {
         let applicable: Vec<(formats::MediaType, &str, &str)> = formats::recommended_conversions()
             .iter()
             .copied()
-            .filter(|(_, input_fmt, _)| {
-                processor::scanned_has_format(&discovered, input_fmt)
-            })
+            .filter(|(_, input_fmt, _)| processor::scanned_has_format(&discovered, input_fmt))
             .collect();
         if applicable.is_empty() {
             if !cli.json {
