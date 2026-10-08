@@ -360,7 +360,7 @@ fn run_noninteractive(cli: &Cli) -> Result<()> {
         _ => processor::Quality::High,
     };
     let threads = cli.threads.unwrap_or_else(util::active_threads);
-    let discovered = processor::scan_formats(&folder, recursive, cli.output_subfolder.as_deref());
+    let discovered = processor::index_files(&folder, recursive, cli.output_subfolder.as_deref());
 
     if !cli.json {
         println!(
@@ -395,7 +395,7 @@ fn run_noninteractive(cli: &Cli) -> Result<()> {
             .formats()
             .iter()
             .copied()
-            .filter(|f| processor::scanned_has_format(&discovered, f))
+            .filter(|f| discovered.has_format(f))
             .collect();
         if applicable.is_empty() {
             if !cli.json {
@@ -410,7 +410,7 @@ fn run_noninteractive(cli: &Cli) -> Result<()> {
             deps::check(formats::MediaType::Video)?;
         }
         for input_fmt in &applicable {
-            let summary = processor::run(&processor::Job {
+            let summary = processor::run_indexed(&processor::Job {
                 folder: &folder,
                 media_type: formats::MediaType::Video,
                 input_fmt,
@@ -432,14 +432,14 @@ fn run_noninteractive(cli: &Cli) -> Result<()> {
                     preset,
                 },
                 image_scale: processor::ImageScale::Original,
-            })?;
+            }, &discovered)?;
             summaries.push(summary);
         }
     } else {
         let applicable: Vec<(formats::MediaType, &str, &str)> = formats::recommended_conversions()
             .iter()
             .copied()
-            .filter(|(_, input_fmt, _)| processor::scanned_has_format(&discovered, input_fmt))
+            .filter(|(_, input_fmt, _)| discovered.has_format(input_fmt))
             .collect();
         if applicable.is_empty() {
             if !cli.json {
@@ -461,7 +461,7 @@ fn run_noninteractive(cli: &Cli) -> Result<()> {
             }
         }
         for &(mt, input_fmt, output_fmt) in &applicable {
-            let summary = processor::run(&processor::Job {
+            let summary = processor::run_indexed(&processor::Job {
                 folder: &folder,
                 media_type: mt,
                 input_fmt,
@@ -480,7 +480,7 @@ fn run_noninteractive(cli: &Cli) -> Result<()> {
                 keep_metadata: true,
                 video_scale: processor::VideoScale::Original,
                 image_scale: processor::ImageScale::Original,
-            })?;
+            }, &discovered)?;
             summaries.push(summary);
         }
     }
@@ -937,12 +937,12 @@ fn run_recommended_upscale(cli: &Cli) -> Result<()> {
         },
     );
 
-    let discovered = processor::scan_formats(&folder, recursive, subfolder.as_deref());
+    let discovered = processor::index_files(&folder, recursive, subfolder.as_deref());
     let video_inputs = formats::MediaType::Video.formats();
     let applicable: Vec<&str> = video_inputs
         .iter()
         .copied()
-        .filter(|input_fmt| processor::scanned_has_format(&discovered, input_fmt))
+        .filter(|input_fmt| discovered.has_format(input_fmt))
         .collect();
 
     if applicable.is_empty() {
@@ -993,7 +993,7 @@ fn run_recommended_upscale(cli: &Cli) -> Result<()> {
             style(*input_fmt).white().bold(),
             style("MKV").green().bold(),
         );
-        let summary = processor::run(&processor::Job {
+        let summary = processor::run_indexed(&processor::Job {
             folder: &folder,
             media_type: formats::MediaType::Video,
             input_fmt,
@@ -1015,7 +1015,7 @@ fn run_recommended_upscale(cli: &Cli) -> Result<()> {
                 preset,
             },
             image_scale: crate::processor::ImageScale::Original,
-        })?;
+        }, &discovered)?;
         summaries.push(summary);
     }
 
@@ -1184,12 +1184,12 @@ fn run_recommended_crunch(cli: &Cli) -> Result<()> {
     };
 
     // ── Scan for applicable conversions ─────────────────────────────
-    let discovered = processor::scan_formats(&folder, recursive, subfolder.as_deref());
+    let discovered = processor::index_files(&folder, recursive, subfolder.as_deref());
     let all_conversions = formats::recommended_conversions();
     let applicable: Vec<(formats::MediaType, &str, &str)> = all_conversions
         .iter()
         .copied()
-        .filter(|(_, input_fmt, _)| processor::scanned_has_format(&discovered, input_fmt))
+        .filter(|(_, input_fmt, _)| discovered.has_format(input_fmt))
         .collect();
 
     if applicable.is_empty() {
@@ -1248,7 +1248,7 @@ fn run_recommended_crunch(cli: &Cli) -> Result<()> {
             style(input_fmt).white().bold(),
             style(output_fmt).green().bold(),
         );
-        let summary = processor::run(&processor::Job {
+        let summary = processor::run_indexed(&processor::Job {
             folder: &folder,
             media_type,
             input_fmt,
@@ -1267,7 +1267,7 @@ fn run_recommended_crunch(cli: &Cli) -> Result<()> {
             keep_metadata: true,
             video_scale: crate::processor::VideoScale::Original,
             image_scale: crate::processor::ImageScale::Original,
-        })?;
+        }, &discovered)?;
         summaries.push(summary);
     }
 
