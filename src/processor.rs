@@ -154,6 +154,15 @@ fn reserve_output(
 }
 
 pub fn run(job: &Job) -> Result<ConversionSummary> {
+    run_with_index(job, None)
+}
+
+/// Recommended batches reuse a single directory index across all formats.
+pub fn run_indexed(job: &Job, index: &FileIndex) -> Result<ConversionSummary> {
+    run_with_index(job, Some(index))
+}
+
+fn run_with_index(job: &Job, index: Option<&FileIndex>) -> Result<ConversionSummary> {
     let input_ext = job.input_fmt.to_ascii_lowercase();
     let output_ext = match job.output_fmt {
         "PDF (Optimized)" => "pdf".to_string(),
@@ -202,25 +211,27 @@ pub fn run(job: &Job) -> Result<ConversionSummary> {
     let backup_counter = AtomicUsize::new(0);
 
     // ── Collect matching files ──────────────────────────────────────
-    let max_depth = if job.recursive { usize::MAX } else { 1 };
-    let output_root = job.output_subfolder.map(|sub| job.folder.join(sub));
-    let mut files: Vec<PathBuf> = WalkDir::new(job.folder)
-        .max_depth(max_depth)
+    let candidates = if let Some(index) = index {
+        index.matching_files(&input_ext)
+    } else {
+        let output_root = job.output_subfolder.map(|sub| job.folder.join(sub));
+        WalkDir::new(job.folder)
+            .max_depth(if job.recursive { usize::MAX } else { 1 })
+            .into_iter()
+            .filter_entry(|e| {
+                output_root
+                    .as_ref()
+                    .map_or(true, |root| !e.path().starts_with(root))
+            })
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_type().is_file())
+            .filter(|e| matches_format(e.path(), &input_ext))
+            .map(|e| e.into_path())
+            .collect()
+    };
+    let mut files: Vec<PathBuf> = candidates
         .into_iter()
-        // Skip the entire output subtree, not just matching files. This saves
-        // considerable I/O on repeated recursive jobs.
-        .filter_entry(|e| {
-            output_root
-                .as_ref()
-                .map_or(true, |root| !e.path().starts_with(root))
-        })
-        .filter_map(|e| e.ok())
-        .filter(|e| e.file_type().is_file())
-        .filter(|e| {
-            let path = e.path();
-            if !matches_format(path, &input_ext) {
-                return false;
-            }
+        .filter(|path| {
             match path.metadata() {
                 Ok(meta) => {
                     job.min_file_size.map_or(true, |min| meta.len() >= min)
@@ -229,7 +240,6 @@ pub fn run(job: &Job) -> Result<ConversionSummary> {
                 Err(_) => false,
             }
         })
-        .map(|e| e.into_path())
         .collect();
 
     files.sort();
@@ -1122,15 +1132,50 @@ fn matches_format(path: &Path, input: &str) -> bool {
         || (input == "aif" && ext == "aiff")
 }
 
-/// One directory traversal to discover applicable conversions, instead of
-/// traversing an entire tree once for every one of the supported formats.
-pub fn scan_formats(
+/// A single snapshot of the input tree, reused across recommended conversions.
+/// The memory cost is proportional to the number of input paths; every job
+/// rechecks metadata before processing in case files changed after the scan.
+pub struct FileIndex {
+    by_extension: HashMap<String, Vec<PathBuf>>,
+}
+
+impl FileIndex {
+    pub fn has_format(&self, input_fmt: &str) -> bool {
+        let input = input_fmt.to_ascii_lowercase();
+        self.by_extension.contains_key(&input)
+            || (input == "jpeg" && self.by_extension.contains_key("jpg"))
+            || (input == "jpg" && self.by_extension.contains_key("jpeg"))
+            || (input == "aiff" && self.by_extension.contains_key("aif"))
+            || (input == "aif" && self.by_extension.contains_key("aiff"))
+    }
+
+    fn matching_files(&self, format: &str) -> Vec<PathBuf> {
+        let wanted = format.to_ascii_lowercase();
+        let mut files = self.by_extension.get(&wanted).cloned().unwrap_or_default();
+        let alias = match wanted.as_str() {
+            "jpeg" => Some("jpg"),
+            "jpg" => Some("jpeg"),
+            "aiff" => Some("aif"),
+            "aif" => Some("aiff"),
+            _ => None,
+        };
+        if let Some(alias) = alias {
+            if let Some(others) = self.by_extension.get(alias) {
+                files.extend_from_slice(others);
+            }
+        }
+        files
+    }
+}
+
+pub fn index_files(
     folder: &Path,
     recursive: bool,
     output_subfolder: Option<&str>,
-) -> HashSet<String> {
+) -> FileIndex {
     let output_root = output_subfolder.map(|sub| folder.join(sub));
-    WalkDir::new(folder)
+    let mut by_extension: HashMap<String, Vec<PathBuf>> = HashMap::new();
+    for entry in WalkDir::new(folder)
         .max_depth(if recursive { usize::MAX } else { 1 })
         .into_iter()
         .filter_entry(|e| {
@@ -1140,14 +1185,31 @@ pub fn scan_formats(
         })
         .filter_map(|e| e.ok())
         .filter(|e| e.file_type().is_file())
-        .filter_map(|e| {
-            e.path()
-                .extension()
-                .map(|ext| ext.to_string_lossy().to_ascii_lowercase())
-        })
+    {
+        if let Some(ext) = entry.path().extension() {
+            by_extension
+                .entry(ext.to_string_lossy().to_ascii_lowercase())
+                .or_default()
+                .push(entry.into_path());
+        }
+    }
+    FileIndex { by_extension }
+}
+
+/// Convenience wrapper for callers that only need the set of input formats.
+#[allow(dead_code)]
+pub fn scan_formats(
+    folder: &Path,
+    recursive: bool,
+    output_subfolder: Option<&str>,
+) -> HashSet<String> {
+    index_files(folder, recursive, output_subfolder)
+        .by_extension
+        .into_keys()
         .collect()
 }
 
+#[allow(dead_code)]
 pub fn scanned_has_format(extensions: &HashSet<String>, input_fmt: &str) -> bool {
     let input = input_fmt.to_ascii_lowercase();
     extensions.contains(&input)
@@ -1160,8 +1222,7 @@ pub fn scanned_has_format(extensions: &HashSet<String>, input_fmt: &str) -> bool
 /// Quick check whether any files with the given format exist in the folder.
 #[allow(dead_code)]
 pub fn has_matching_files(folder: &Path, input_fmt: &str, recursive: bool) -> bool {
-    let extensions = scan_formats(folder, recursive, None);
-    scanned_has_format(&extensions, input_fmt)
+    index_files(folder, recursive, None).has_format(input_fmt)
 }
 
 #[cfg(test)]
@@ -1198,6 +1259,18 @@ mod tests {
         assert_eq!(first, desired);
         assert_eq!(second, dir.join("a.1.avif"));
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn index_collects_aliases_in_one_scan() {
+        let dir = std::env::temp_dir().join(format!("rc-index-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.jpg"), b"a").unwrap();
+        std::fs::write(dir.join("b.jpeg"), b"b").unwrap();
+        let index = index_files(&dir, false, None);
+        assert!(index.has_format("JPEG"));
+        assert_eq!(index.matching_files("jpeg").len(), 2);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
