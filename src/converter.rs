@@ -81,16 +81,26 @@ fn publish_staged(staged: &Path, destination: &Path, restore_backup: Option<&Pat
     // *before* moving the destination; a backup failure leaves it untouched.
     if let Some(path) = restore_backup {
         if destination.symlink_metadata().is_err() {
-            bail!("Cannot back up missing destination {}", destination.display());
+            bail!(
+                "Cannot back up missing destination {}",
+                destination.display()
+            );
         }
         if path.symlink_metadata().is_ok() {
-            bail!("Refusing to overwrite existing restore backup {}", path.display());
+            bail!(
+                "Refusing to overwrite existing restore backup {}",
+                path.display()
+            );
         }
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
         std::fs::copy(destination, path).with_context(|| {
-            format!("Could not back up {} to {}", destination.display(), path.display())
+            format!(
+                "Could not back up {} to {}",
+                destination.display(),
+                path.display()
+            )
         })?;
     }
     let backup = staged
