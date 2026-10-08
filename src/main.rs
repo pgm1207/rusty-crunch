@@ -147,13 +147,16 @@ struct Cli {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    if cli.threads == Some(0) {
-        anyhow::bail!("--threads must be at least 1");
+    if cli.threads.is_some_and(|n| n == 0 || n > 64) {
+        anyhow::bail!("--threads must be between 1 and 64");
     }
     if let Some(name) = cli.output_subfolder.as_deref() {
         let mut parts = std::path::Path::new(name).components();
         if !matches!(parts.next(), Some(std::path::Component::Normal(_)))
             || parts.next().is_some()
+            || name.contains(['\\', ':'])
+            || name.contains("..")
+            || name.trim() != name
         {
             anyhow::bail!("--output-subfolder must be a single folder name (not a path)");
         }
@@ -225,6 +228,7 @@ fn main() -> Result<()> {
                 "♻ Restore",
                 agent_label,
                 "⚙️  Settings",
+                "📊 History & Statistics",
                 "🔄 Check for Updates",
                 "🚪 Exit",
             ])
@@ -273,6 +277,19 @@ fn main() -> Result<()> {
             Some(3) => agent::setup()?,
             Some(4) => config::edit_settings()?,
             Some(5) => {
+                let view = Select::with_theme(&ColorfulTheme::default())
+                    .with_prompt("View activity")
+                    .items(&["📜 Conversion history", "📊 Cumulative statistics", "↩ Back"])
+                    .default(0)
+                    .interact_opt()?;
+                match view {
+                    Some(0) => processor::print_history(false)?,
+                    Some(1) => processor::print_stats(false)?,
+                    _ => {}
+                }
+                pause_before_menu();
+            }
+            Some(6) => {
                 check_for_updates()?;
                 pause_before_menu();
             }
