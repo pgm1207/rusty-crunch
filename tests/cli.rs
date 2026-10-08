@@ -368,7 +368,11 @@ fn inplace_pdf_optimization_is_reversible() {
         .env("PATH", &full_path)
         .output()
         .unwrap();
-    assert!(convert.status.success(), "{}", String::from_utf8_lossy(&convert.stderr));
+    assert!(
+        convert.status.success(),
+        "{}",
+        String::from_utf8_lossy(&convert.stderr)
+    );
     assert_eq!(fs::read(&pdf).unwrap(), b"optimized");
 
     let undo = cmd(&s)
@@ -376,6 +380,10 @@ fn inplace_pdf_optimization_is_reversible() {
         .env("PATH", &full_path)
         .output()
         .unwrap();
-    assert!(undo.status.success(), "{}", String::from_utf8_lossy(&undo.stderr));
+    assert!(
+        undo.status.success(),
+        "{}",
+        String::from_utf8_lossy(&undo.stderr)
+    );
     assert_eq!(fs::read(&pdf).unwrap(), original);
 }
