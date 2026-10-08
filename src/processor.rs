@@ -444,15 +444,13 @@ pub fn run(job: &Job) -> Result<ConversionSummary> {
                     pb.set_message(name.to_string());
 
                     let input_size = input_path.metadata().map(|m| m.len()).unwrap_or(0);
-                    let inplace_backup = if same_ext
-                        && final_output_path == input_path
-                        && job.delete_originals
-                    {
-                        let idx = backup_counter.fetch_add(1, Ordering::Relaxed);
-                        Some(history_backup_path(&input_path, session_id, idx))
-                    } else {
-                        None
-                    };
+                    let inplace_backup =
+                        if same_ext && final_output_path == input_path && job.delete_originals {
+                            let idx = backup_counter.fetch_add(1, Ordering::Relaxed);
+                            Some(history_backup_path(&input_path, session_id, idx))
+                        } else {
+                            None
+                        };
 
                     match converter::convert(
                         &input_path,
@@ -808,7 +806,10 @@ pub fn restore_last_session() -> Result<()> {
         // Same-extension in-place conversions replace their original path.
         // That pathname existing does not prove the original is recoverable.
         if entry.original_path == entry.converted_path
-            && !entry.backup_path.as_ref().is_some_and(|backup| backup.exists())
+            && !entry
+                .backup_path
+                .as_ref()
+                .is_some_and(|backup| backup.exists())
         {
             failures += 1;
             continue;
