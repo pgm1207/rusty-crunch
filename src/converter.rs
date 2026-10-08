@@ -69,75 +69,38 @@ fn staging_dir(output: &Path) -> Result<std::path::PathBuf> {
     bail!("Could not allocate a unique staging directory")
 }
 
-/// Publish only a fully written file. Retain the previous destination until
-/// the rename succeeds, so failed overwrites never destroy user data.
+/// Publish a completely written file with a *single* same-filesystem rename.
+/// This keeps the previous destination visible until the replacement is ready:
+/// a crash or failed rename cannot leave it temporarily absent.
 fn publish_staged(staged: &Path, destination: &Path, restore_backup: Option<&Path>) -> Result<()> {
     if let Ok(meta) = destination.symlink_metadata() {
         if meta.is_dir() {
             bail!("Refusing to replace a directory: {}", destination.display());
         }
     }
-    // An in-place rewrite must be reversible. Copy the source to user history
-    // *before* moving the destination; a backup failure leaves it untouched.
+
+    // An in-place rewrite with undo enabled must retain the original content.
+    // Copy it to persistent history first; failure aborts before publication.
     if let Some(path) = restore_backup {
         if destination.symlink_metadata().is_err() {
-            bail!(
-                "Cannot back up missing destination {}",
-                destination.display()
-            );
+            bail!("Cannot back up missing destination {}", destination.display());
         }
         if path.symlink_metadata().is_ok() {
-            bail!(
-                "Refusing to overwrite existing restore backup {}",
-                path.display()
-            );
+            bail!("Refusing to overwrite existing restore backup {}", path.display());
         }
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
         std::fs::copy(destination, path).with_context(|| {
-            format!(
-                "Could not back up {} to {}",
-                destination.display(),
-                path.display()
-            )
+            format!("Could not back up {} to {}", destination.display(), path.display())
         })?;
     }
-    let backup = staged
-        .parent()
-        .context("Staged output has no parent")?
-        .join("previous-output");
-    let had_destination = destination.symlink_metadata().is_ok();
-    if had_destination {
-        std::fs::rename(destination, &backup)
-            .with_context(|| format!("Could not preserve existing {}", destination.display()))?;
-    }
 
-    if let Err(error) = std::fs::rename(staged, destination) {
-        if had_destination {
-            if let Err(restore_error) = std::fs::rename(&backup, destination) {
-                bail!(
-                    "Publishing {} failed ({error}); restoring the previous file also failed ({restore_error}).                      The previous file remains at {}",
-                    destination.display(),
-                    backup.display()
-                );
-            }
-        }
-        return Err(error).with_context(|| format!("Could not publish {}", destination.display()));
-    }
-    if had_destination {
-        // A cleanup failure must not turn a successful conversion into an error.
-        if let Err(e) = std::fs::remove_file(&backup) {
-            crate::util::log_event(
-                "WARN",
-                &format!(
-                    "Could not clean up previous output {}: {e}",
-                    backup.display()
-                ),
-            );
-        }
-    }
-    Ok(())
+    // Rust's rename replaces an existing regular file on supported platforms.
+    // Because the staging directory is a sibling, this rename is on the same
+    // filesystem and is atomic on filesystems that support atomic rename.
+    std::fs::rename(staged, destination)
+        .with_context(|| format!("Could not publish {}", destination.display()))
 }
 
 pub async fn convert(input: &Path, output: &Path, opts: ConversionOptions<'_>) -> Result<()> {
@@ -173,8 +136,8 @@ pub async fn convert(input: &Path, output: &Path, opts: ConversionOptions<'_>) -
         }
     }
 
-    // If publication fails, keep the staging directory for manual recovery,
-    // particularly if the rollback itself also fails.
+    // A failed publish leaves the original output intact. Keep the staged
+    // result for manual recovery (for example when a destination is locked).
     publish_staged(&staged, output, opts.restore_backup)?;
     if let Err(e) = std::fs::remove_dir_all(&stage_dir) {
         crate::util::log_event(
