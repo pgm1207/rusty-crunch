@@ -880,7 +880,9 @@ pub fn restore_last_session() -> Result<()> {
     );
 
     if failures > 0 {
-        anyhow::bail!("Restore could not safely process {failures} file(s). See diagnostics above.");
+        anyhow::bail!(
+            "Restore could not safely process {failures} file(s). See diagnostics above."
+        );
     }
     Ok(())
 }
@@ -924,7 +926,11 @@ pub fn print_history(json: bool) -> Result<()> {
             session_id: rec.session_id,
             created_unix: rec.created_unix,
             files_converted: rec.files_converted,
-            backups: rec.entries.iter().filter(|e| e.backup_path.is_some()).count(),
+            backups: rec
+                .entries
+                .iter()
+                .filter(|e| e.backup_path.is_some())
+                .count(),
             bytes_saved: rec.bytes_saved,
         })
         .collect();
