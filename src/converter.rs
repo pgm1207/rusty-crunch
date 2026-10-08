@@ -45,6 +45,9 @@ pub struct ConversionOptions<'a> {
     pub keep_metadata: bool,
     pub video_scale: VideoScale,
     pub image_scale: ImageScale,
+    /// Preserve the previous destination for an undoable in-place conversion.
+    /// Copies are intentional: the history folder can live on another volume.
+    pub restore_backup: Option<&'a Path>,
 }
 
 /// Create a unique staging directory *beside* the output. Publishing is then a
@@ -68,7 +71,28 @@ fn staging_dir(output: &Path) -> Result<std::path::PathBuf> {
 
 /// Publish only a fully written file. Retain the previous destination until
 /// the rename succeeds, so failed overwrites never destroy user data.
-fn publish_staged(staged: &Path, destination: &Path) -> Result<()> {
+fn publish_staged(staged: &Path, destination: &Path, restore_backup: Option<&Path>) -> Result<()> {
+    if let Ok(meta) = destination.symlink_metadata() {
+        if meta.is_dir() {
+            bail!("Refusing to replace a directory: {}", destination.display());
+        }
+    }
+    // An in-place rewrite must be reversible. Copy the source to user history
+    // *before* moving the destination; a backup failure leaves it untouched.
+    if let Some(path) = restore_backup {
+        if destination.symlink_metadata().is_err() {
+            bail!("Cannot back up missing destination {}", destination.display());
+        }
+        if path.symlink_metadata().is_ok() {
+            bail!("Refusing to overwrite existing restore backup {}", path.display());
+        }
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::copy(destination, path).with_context(|| {
+            format!("Could not back up {} to {}", destination.display(), path.display())
+        })?;
+    }
     let backup = staged
         .parent()
         .context("Staged output has no parent")?
@@ -141,7 +165,7 @@ pub async fn convert(input: &Path, output: &Path, opts: ConversionOptions<'_>) -
 
     // If publication fails, keep the staging directory for manual recovery,
     // particularly if the rollback itself also fails.
-    publish_staged(&staged, output)?;
+    publish_staged(&staged, output, opts.restore_backup)?;
     if let Err(e) = std::fs::remove_dir_all(&stage_dir) {
         crate::util::log_event(
             "WARN",
@@ -816,9 +840,24 @@ mod transaction_tests {
         let staged = stage.join("generated.txt");
         std::fs::write(&staged, b"replacement").unwrap();
         assert_eq!(std::fs::read(&output).unwrap(), b"original");
-        publish_staged(&staged, &output).unwrap();
+        publish_staged(&staged, &output, None).unwrap();
         assert_eq!(std::fs::read(&output).unwrap(), b"replacement");
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn publishing_in_place_can_retain_a_restorable_original() {
+        let dir = scratch();
+        let output = dir.join("original.pdf");
+        let old_copy = dir.join("history").join("original.pdf");
+        std::fs::write(&output, b"old version").unwrap();
+        let stage = staging_dir(&output).unwrap();
+        let staged = stage.join("new.pdf");
+        std::fs::write(&staged, b"optimized version").unwrap();
+        publish_staged(&staged, &output, Some(&old_copy)).unwrap();
+        assert_eq!(std::fs::read(&output).unwrap(), b"optimized version");
+        assert_eq!(std::fs::read(&old_copy).unwrap(), b"old version");
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
@@ -827,7 +866,7 @@ mod transaction_tests {
         let output = dir.join("result.txt");
         std::fs::write(&output, b"original").unwrap();
         let missing = dir.join("missing.txt");
-        assert!(publish_staged(&missing, &output).is_err());
+        assert!(publish_staged(&missing, &output, None).is_err());
         assert_eq!(std::fs::read(&output).unwrap(), b"original");
         std::fs::remove_dir_all(&dir).unwrap();
     }
