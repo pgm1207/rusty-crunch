@@ -6,7 +6,7 @@ use console::style;
 use futures::StreamExt;
 use indicatif::{ProgressBar, ProgressStyle};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 #[cfg(not(target_os = "windows"))]
 use std::ffi::CString;
 use std::path::{Path, PathBuf};
@@ -86,6 +86,15 @@ pub struct ConversionSummary {
     pub input_format: String,
     pub output_format: String,
     pub files_converted: usize,
+    /// Matching files found before filtering existing outputs or cache hits.
+    #[serde(default)]
+    pub files_matched: usize,
+    #[serde(default)]
+    pub input_bytes: u64,
+    #[serde(default)]
+    pub output_bytes: u64,
+    #[serde(default)]
+    pub bytes_added: u64,
     pub files_skipped: usize,
     pub files_failed: usize,
     pub bytes_saved: u64,
@@ -131,54 +140,43 @@ pub fn run(job: &Job) -> Result<ConversionSummary> {
     });
 
     // Session history for restore/undo functionality.
-    let session_id = SystemTime::now()
+    let now = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
+        .unwrap_or_default();
+    // Nanosecond IDs prevent successive format jobs in the same second from
+    // overwriting each other's restore history.
+    let session_id = now.as_nanos() as u64;
+    let created_unix = now.as_secs();
     let history_entries = Mutex::new(Vec::<HistoryEntry>::new());
     let backup_counter = AtomicUsize::new(0);
 
     // ── Collect matching files ──────────────────────────────────────
     let max_depth = if job.recursive { usize::MAX } else { 1 };
+    let output_root = job.output_subfolder.map(|sub| job.folder.join(sub));
     let mut files: Vec<PathBuf> = WalkDir::new(job.folder)
         .max_depth(max_depth)
         .into_iter()
+        // Skip the entire output subtree, not just matching files. This saves
+        // considerable I/O on repeated recursive jobs.
+        .filter_entry(|e| {
+            output_root
+                .as_ref()
+                .map_or(true, |root| !e.path().starts_with(root))
+        })
         .filter_map(|e| e.ok())
         .filter(|e| e.file_type().is_file())
         .filter(|e| {
             let path = e.path();
-            let mut matches_ext = path
-                .extension()
-                .map(|ext| {
-                    let lc = ext.to_ascii_lowercase();
-                    lc == input_ext.as_str()
-                        || (input_ext == "jpeg" && lc == "jpg")
-                        || (input_ext == "jpg" && lc == "jpeg")
-                        || (input_ext == "aiff" && lc == "aif")
-                        || (input_ext == "aif" && lc == "aiff")
-                        || (input_ext == "aiff" && lc == "aif")
-                        || (input_ext == "aif" && lc == "aiff")
-                        || (input_ext == "aiff" && lc == "aif")
-                        || (input_ext == "aif" && lc == "aiff")
-                })
-                .unwrap_or(false);
-
-            if matches_ext {
-                if let Ok(meta) = path.metadata() {
-                    let size = meta.len();
-                    if let Some(min) = job.min_file_size {
-                        if size < min {
-                            matches_ext = false;
-                        }
-                    }
-                    if let Some(max) = job.max_file_size {
-                        if size > max {
-                            matches_ext = false;
-                        }
-                    }
-                }
+            if !matches_format(path, &input_ext) {
+                return false;
             }
-            matches_ext
+            match path.metadata() {
+                Ok(meta) => {
+                    job.min_file_size.map_or(true, |min| meta.len() >= min)
+                        && job.max_file_size.map_or(true, |max| meta.len() <= max)
+                }
+                Err(_) => false,
+            }
         })
         .map(|e| e.into_path())
         .collect();
@@ -186,12 +184,14 @@ pub fn run(job: &Job) -> Result<ConversionSummary> {
     files.sort();
 
     if files.is_empty() {
-        println!(
-            "\n  {} No .{} files found in {}",
-            style("⚠").yellow(),
-            input_ext,
-            style(job.folder.display()).dim()
-        );
+        if !util::is_quiet() {
+            println!(
+                "\n  {} No .{} files found in {}",
+                style("⚠").yellow(),
+                input_ext,
+                style(job.folder.display()).dim()
+            );
+        }
         return Ok(ConversionSummary {
             media_type: format!("{:?}", job.media_type),
             input_format: job.input_fmt.to_string(),
@@ -210,7 +210,7 @@ pub fn run(job: &Job) -> Result<ConversionSummary> {
         .map(|m| m.len())
         .sum();
 
-    if !job.dry_run && !job.delete_originals {
+    if !util::is_quiet() && !job.dry_run && !job.delete_originals {
         // Estimate output size as 50% of input (rough average for all formats)
         let estimated_output = (total_input_bytes as f64 * 0.5) as u64;
         if check_available_space(job.folder, estimated_output) {
@@ -234,18 +234,22 @@ pub fn run(job: &Job) -> Result<ConversionSummary> {
 
     // ── Dry-run mode ────────────────────────────────────────────────
     if job.dry_run {
-        println!(
-            "\n  {} Dry run: would convert {} file{} ({} total input size)",
-            style("🔍").cyan(),
-            style(total).cyan().bold(),
-            if total == 1 { "" } else { "s" },
-            style(util::human_bytes(total_input_bytes)).white().bold(),
-        );
+        if !util::is_quiet() {
+            println!(
+                "\n  {} Dry run: would convert {} file{} ({} total input size)",
+                style("🔍").cyan(),
+                style(total).cyan().bold(),
+                if total == 1 { "" } else { "s" },
+                style(util::human_bytes(total_input_bytes)).white().bold(),
+            );
+        }
         return Ok(ConversionSummary {
             media_type: format!("{:?}", job.media_type),
             input_format: job.input_fmt.to_string(),
             output_format: job.output_fmt.to_string(),
             files_converted: 0,
+            files_matched: total,
+            input_bytes: total_input_bytes,
             ..Default::default()
         });
     }
@@ -263,16 +267,22 @@ pub fn run(job: &Job) -> Result<ConversionSummary> {
         if actual_threads == 1 { "" } else { "s" }
     );
 
-    println!(
-        "\n  {} Found {} file{} · processing {}",
-        style("⚡").cyan(),
-        style(total).cyan().bold(),
-        if total == 1 { "" } else { "s" },
-        style(mode_str).cyan().bold(),
-    );
+    if !util::is_quiet() {
+        println!(
+            "\n  {} Found {} file{} · processing {}",
+            style("⚡").cyan(),
+            style(total).cyan().bold(),
+            if total == 1 { "" } else { "s" },
+            style(mode_str).cyan().bold(),
+        );
+    }
 
     // ── Progress bar with ETA ───────────────────────────────────────
-    let pb = ProgressBar::new(total as u64);
+    let pb = if util::is_quiet() {
+        ProgressBar::hidden()
+    } else {
+        ProgressBar::new(total as u64)
+    };
     pb.set_style(
         ProgressStyle::with_template(
             "  {spinner:.cyan} [{bar:40.cyan/dim}] {pos}/{len}  ETA {eta}  {msg}",
@@ -286,6 +296,8 @@ pub fn run(job: &Job) -> Result<ConversionSummary> {
     let err_count = AtomicUsize::new(0);
     let del_err_count = AtomicUsize::new(0);
     let saved_bytes = AtomicU64::new(0);
+    let output_bytes = AtomicU64::new(0);
+    let added_bytes = AtomicU64::new(0);
     // Track best/worst compression ratios
     let best_ratio = AtomicU64::new(0); // stored as ratio * 10000 (fixed point)
     let worst_ratio = AtomicU64::new(10000); // 100% = no savings (worst possible)
@@ -309,6 +321,8 @@ pub fn run(job: &Job) -> Result<ConversionSummary> {
                 let err_count = &err_count;
                 let del_err_count = &del_err_count;
                 let saved_bytes = &saved_bytes;
+                let output_bytes = &output_bytes;
+                let added_bytes = &added_bytes;
                 let best_ratio = &best_ratio;
                 let worst_ratio = &worst_ratio;
                 let history_entries = &history_entries;
@@ -345,13 +359,7 @@ pub fn run(job: &Job) -> Result<ConversionSummary> {
                         input_path.with_extension(&output_ext)
                     };
 
-                    // Ensure parent directory exists for nested outputs
-                    if let Some(parent) = output_path.parent() {
-                        if !parent.exists() {
-                            let _ = std::fs::create_dir_all(parent);
-                        }
-                    }
-
+                    // Staging creates the destination parent and propagates errors.
                     let mut final_output_path = output_path;
 
                     let is_inplace_intent =
@@ -439,6 +447,11 @@ pub fn run(job: &Job) -> Result<ConversionSummary> {
                         Ok(()) => {
                             let output_size =
                                 final_output_path.metadata().map(|m| m.len()).unwrap_or(0);
+                            output_bytes.fetch_add(output_size, Ordering::Relaxed);
+                            added_bytes.fetch_add(
+                                output_size.saturating_sub(input_size),
+                                Ordering::Relaxed,
+                            );
                             if input_size > 0 {
                                 let saved = input_size.saturating_sub(output_size);
                                 saved_bytes.fetch_add(saved, Ordering::Relaxed);
@@ -492,6 +505,7 @@ pub fn run(job: &Job) -> Result<ConversionSummary> {
                                         original_path: input_path.clone(),
                                         converted_path: final_output_path.clone(),
                                         backup_path,
+                                        converted_stamp: CacheEntry::from_path(&final_output_path),
                                     });
                             }
 
@@ -521,10 +535,8 @@ pub fn run(job: &Job) -> Result<ConversionSummary> {
                                 "ERROR",
                                 &format!("{}: {}", input_path.display(), err_msg),
                             );
-                            // Clean up partial output (but not for in-place where output IS the input)
-                            if !same_ext {
-                                let _ = std::fs::remove_file(&final_output_path);
-                            }
+                            // Conversion uses isolated staging and never writes
+                            // partial bytes to the destination.
                             err_count.fetch_add(1, Ordering::Relaxed);
                         }
                     }
@@ -554,7 +566,7 @@ pub fn run(job: &Job) -> Result<ConversionSummary> {
     if !entries.is_empty() {
         let _ = save_history_record(&HistoryRecord {
             session_id,
-            created_unix: session_id,
+            created_unix,
             entries,
             files_converted: ok_count.load(Ordering::Relaxed),
             bytes_saved: saved_bytes.load(Ordering::Relaxed),
@@ -571,8 +583,9 @@ pub fn run(job: &Job) -> Result<ConversionSummary> {
     let best = best_ratio.load(Ordering::Relaxed);
     let worst = worst_ratio.load(Ordering::Relaxed);
 
-    println!();
-    println!("  {}", style("─".repeat(50)).dim());
+    if !util::is_quiet() {
+        println!();
+        println!("  {}", style("─".repeat(50)).dim());
     println!(
         "  {} {} converted   {} skipped   {} failed",
         style("┃").dim(),
@@ -623,6 +636,7 @@ pub fn run(job: &Job) -> Result<ConversionSummary> {
         );
     }
     println!("  {}", style("─".repeat(50)).dim());
+    }
 
     crate::util::log_event(
         "INFO",
@@ -642,6 +656,10 @@ pub fn run(job: &Job) -> Result<ConversionSummary> {
         input_format: job.input_fmt.to_string(),
         output_format: job.output_fmt.to_string(),
         files_converted: ok,
+        files_matched: total,
+        input_bytes: total_input_bytes,
+        output_bytes: output_bytes.load(Ordering::Relaxed),
+        bytes_added: added_bytes.load(Ordering::Relaxed),
         files_skipped: skipped,
         files_failed: errs,
         bytes_saved: saved,
@@ -662,6 +680,10 @@ struct HistoryEntry {
     original_path: PathBuf,
     converted_path: PathBuf,
     backup_path: Option<PathBuf>,
+    // Older history records do not contain this stamp: do not blindly delete
+    // user files when restoring such records.
+    #[serde(default)]
+    converted_stamp: Option<CacheEntry>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -750,11 +772,33 @@ pub fn restore_last_session() -> Result<()> {
     let mut failures = 0usize;
 
     for entry in record.entries.iter().rev() {
+        // If the original was moved to backup, never delete the conversion
+        // unless we can also recover that original.
+        if entry.backup_path.as_ref().is_some_and(|backup| !backup.exists())
+            && !entry.original_path.exists()
+        {
+            failures += 1;
+            continue;
+        }
+
         if entry.converted_path.exists() {
+            let unchanged = entry
+                .converted_stamp
+                .as_ref()
+                .is_some_and(|stamp| stamp.matches(&entry.converted_path));
+            if !unchanged {
+                eprintln!(
+                    "  Skipping modified or unverified output: {}",
+                    entry.converted_path.display()
+                );
+                failures += 1;
+                continue;
+            }
             if std::fs::remove_file(&entry.converted_path).is_ok() {
                 removed_outputs += 1;
             } else {
                 failures += 1;
+                continue;
             }
         }
 
@@ -767,6 +811,11 @@ pub fn restore_last_session() -> Result<()> {
                 }
             }
         }
+    }
+
+    if failures == 0 {
+        // Prevent a second undo from acting on the same session.
+        let _ = std::fs::remove_file(&path);
     }
 
     println!(
@@ -979,7 +1028,7 @@ impl CacheEntry {
             .ok()?
             .duration_since(SystemTime::UNIX_EPOCH)
             .ok()?
-            .as_secs();
+            .as_nanos() as u64;
         Some(Self {
             size: meta.len(),
             modified,
@@ -1015,32 +1064,57 @@ fn save_opt_cache(cache: &HashMap<PathBuf, CacheEntry>) {
     }
 }
 
-/// Quick check whether any files with the given format exist in the folder.
-pub fn has_matching_files(folder: &Path, input_fmt: &str, recursive: bool) -> bool {
-    let input_ext = input_fmt.to_ascii_lowercase();
-    let max_depth = if recursive { usize::MAX } else { 1 };
+/// Normalize the extension aliases used by input format selection.
+fn matches_format(path: &Path, input: &str) -> bool {
+    let Some(ext) = path.extension() else { return false };
+    let ext = ext.to_string_lossy().to_ascii_lowercase();
+    ext == input
+        || (input == "jpeg" && ext == "jpg")
+        || (input == "jpg" && ext == "jpeg")
+        || (input == "aiff" && ext == "aif")
+        || (input == "aif" && ext == "aiff")
+}
+
+/// One directory traversal to discover applicable conversions, instead of
+/// traversing an entire tree once for every one of the supported formats.
+pub fn scan_formats(
+    folder: &Path,
+    recursive: bool,
+    output_subfolder: Option<&str>,
+) -> HashSet<String> {
+    let output_root = output_subfolder.map(|sub| folder.join(sub));
     WalkDir::new(folder)
-        .max_depth(max_depth)
+        .max_depth(if recursive { usize::MAX } else { 1 })
         .into_iter()
-        .filter_map(|e| e.ok())
-        .any(|e| {
-            e.file_type().is_file()
-                && e.path()
-                    .extension()
-                    .map(|ext| {
-                        let lc = ext.to_ascii_lowercase();
-                        lc == input_ext.as_str()
-                            || (input_ext == "jpeg" && lc == "jpg")
-                            || (input_ext == "jpg" && lc == "jpeg")
-                            || (input_ext == "aiff" && lc == "aif")
-                            || (input_ext == "aif" && lc == "aiff")
-                            || (input_ext == "aiff" && lc == "aif")
-                            || (input_ext == "aif" && lc == "aiff")
-                            || (input_ext == "aiff" && lc == "aif")
-                            || (input_ext == "aif" && lc == "aiff")
-                    })
-                    .unwrap_or(false)
+        .filter_entry(|e| {
+            output_root
+                .as_ref()
+                .map_or(true, |root| !e.path().starts_with(root))
         })
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_file())
+        .filter_map(|e| {
+            e.path()
+                .extension()
+                .map(|ext| ext.to_string_lossy().to_ascii_lowercase())
+        })
+        .collect()
+}
+
+pub fn scanned_has_format(extensions: &HashSet<String>, input_fmt: &str) -> bool {
+    let input = input_fmt.to_ascii_lowercase();
+    extensions.contains(&input)
+        || (input == "jpeg" && extensions.contains("jpg"))
+        || (input == "jpg" && extensions.contains("jpeg"))
+        || (input == "aiff" && extensions.contains("aif"))
+        || (input == "aif" && extensions.contains("aiff"))
+}
+
+/// Quick check whether any files with the given format exist in the folder.
+#[allow(dead_code)]
+pub fn has_matching_files(folder: &Path, input_fmt: &str, recursive: bool) -> bool {
+    let extensions = scan_formats(folder, recursive, None);
+    scanned_has_format(&extensions, input_fmt)
 }
 
 #[cfg(test)]
@@ -1213,6 +1287,7 @@ mod tests {
             threads_used: 4,
             compression_best_percent: 45.0,
             compression_worst_percent: 95.0,
+            ..Default::default()
         };
 
         assert_eq!(summary.files_converted, 10);
@@ -1236,6 +1311,7 @@ mod tests {
             threads_used: 8,
             compression_best_percent: 50.0,
             compression_worst_percent: 80.0,
+            ..Default::default()
         };
 
         let json = serde_json::to_string(&summary).unwrap();
