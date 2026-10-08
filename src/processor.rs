@@ -175,9 +175,11 @@ pub fn run(job: &Job) -> Result<ConversionSummary> {
         ),
     );
 
-    // Create output sub-folder before any parallel work
-    if let Some(sub) = job.output_subfolder {
-        std::fs::create_dir_all(job.folder.join(sub))?;
+    // A dry run must never create output directories.
+    if !job.dry_run {
+        if let Some(sub) = job.output_subfolder {
+            std::fs::create_dir_all(job.folder.join(sub))?;
+        }
     }
 
     // ── Load optimization cache (for same-extension jobs like PDF → PDF) ──
@@ -1038,7 +1040,7 @@ fn check_available_space(_folder: &Path, _required_bytes: u64) -> bool {
 // Tracks (size, mtime) of files after in-place optimization so repeat
 // runs skip files that haven't changed since last processing.
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 struct CacheEntry {
     size: u64,
     modified: u64,
