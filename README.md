@@ -6,12 +6,15 @@ A fast, terminal-based media converter and background agent written in Rust. Bat
 
 ## Features
 
-- **Concurrent processing** — a multi-threaded Tokio runtime with `futures::for_each_concurrent`, and video jobs are auto-clamped to 2 parallel encodes to protect the GPU/CPU.
-- **Smart caching** — an optimization cache keyed on `(size, mtime)` skips files that were already processed across runs.
+- **Safe conversion pipeline** — converts to an isolated staging directory, validates the result, and publishes using a same-filesystem rename. A failing converter leaves existing destinations untouched.
+- **Predictable concurrent output** — workers reserve destination names, so similarly named inputs (such as `photo.jpg` and `photo.jpeg`) cannot overwrite each other's output.
+- **Tunable parallelism** — a Tokio runtime with bounded conversion concurrency, user-selectable with `--threads N`. Video jobs remain capped at two simultaneous encodes.
+- **Faster folder discovery** — recommended mode discovers format availability in one filesystem scan and excludes generated output subfolders from later recursive scans.
+- **Smart caching** — an optimization cache keyed on `(size, high-resolution mtime)` skips unchanged same-format files across runs.
 - **Recommended Crunch** — one-key optimal pipelines (lossless WAV/AIFF → FLAC, legacy video → MKV, JPEG → AVIF, PDF re-optimization, …).
 - **Upscale** — smart integer upscaling (2x/3x/4x to a target height) with Anime/Movie profiles and hardware-encoder detection.
-- **Restore** — undo the last session: outputs are removed and originals restored from backups.
-- **Non-interactive mode** — `--yes` plus flags makes it fully scriptable (see [Usage](#usage)).
+- **Safer restore** — tracks completed output sizes and modification timestamps to avoid deleting results that users later changed. Destructive conversions retain backed-up originals.
+- **Scriptable and inspectable** — `--yes`, `--output-subfolder`, `--keep-originals`, and `--json` support automation; JSON includes matched files and input/output byte counts.
 - **Agent Mode** — a detached background service that watches folders (OS notifications) or scans periodically, with PID-based lifecycle management.
 - **Auto-installs dependencies** — detects your package manager (dnf/apt/pacman/zypper/brew/winget/choco/scoop) and installs missing tools.
 - **Self-update with checksum verification** — verifies the release `SHA256SUMS` before replacing the binary.
@@ -98,6 +101,15 @@ rusty-crunch --yes --recursive --delete-originals --quality high --json ~/Videos
 # Only files between 10MB and 4GB
 rusty-crunch --yes --min-size 10MB --max-size 4GB ~/Videos
 
+# Control resource use and protect originals, overriding saved defaults
+rusty-crunch --yes --threads 4 --keep-originals ~/Videos
+
+# Store converted files separately and get pure JSON on stdout
+rusty-crunch --yes --recursive --output-subfolder compressed --json ~/Pictures
+
+# Preview and count selected inputs without invoking external tools
+rusty-crunch --yes --dry-run --json ~/Pictures | jq 'map({format: .input_format, count: .files_matched, bytes: .input_bytes})'
+
 # Upscale everything to 1440p with the anime profile
 rusty-crunch --yes --mode upscale --target 1440 --preset anime ~/Anime
 
@@ -113,14 +125,17 @@ rusty-crunch --mode restore
 | `-y, --yes` | Non-interactive: use config defaults, skip all prompts. |
 | `--mode <optimize\|upscale\|restore>` | Non-interactive action (default `optimize`). |
 | `--recursive` / `--no-recursive` | Override the config default for sub-folder scanning. |
-| `--delete-originals` | Delete originals after a successful conversion. |
+| `--delete-originals` | Move successfully converted originals into restore backups. |
+| `--keep-originals` | Override a saved delete-originals default; incompatible with `--delete-originals`. |
+| `--threads N` | Set maximum parallel conversions (1 to 64); video still capped at 2 jobs. |
+| `--output-subfolder NAME` | Write outputs into a single named subdirectory, preserving relative paths. |
 | `--force-recheck` | Re-process files even if previously optimized. |
 | `--quality <low\|medium\|high>` | Output quality for optimize. |
 | `--conflict <skip\|overwrite\|rename>` | How to handle an existing output file (non-interactive). |
 | `--min-size SIZE` / `--max-size SIZE` | Only process files within a size range (e.g. `10MB`, `4GB`). |
 | `--target HEIGHT` / `--preset <anime\|movie>` | Upscale target height / profile. |
 | `--dry-run` | Simulate the run without converting anything. |
-| `--json` | Machine-readable output (conversion summary, `--history`, `--stats`). |
+| `--json` | Machine-readable output (conversion summary, `--history`, `--stats`). With `--yes`, stdout contains only JSON. |
 | `--no-color` | Disable colored output (also honours `NO_COLOR`). |
 | `--list-formats` | List supported input/output formats and exit. |
 | `--check-update` | Report a newer release without installing it. |
@@ -133,6 +148,16 @@ rusty-crunch --mode restore
 | `--health-check` | Verify required external tools (exit 1 if missing). |
 | `--agent` / `--agent-stop` / `--agent-status` | Background agent control. |
 | `-V, --version`, `-h, --help` | Version / help. |
+
+### JSON summary fields
+
+Non-interactive `--json` prints an array of conversion summaries. The relevant per-format fields are `files_matched` (selected files), `files_converted`, `files_skipped`, `files_failed`, `input_bytes`, `output_bytes`, `bytes_saved`, `bytes_added`, and `duration_secs`. With `--dry-run`, `files_matched` and `input_bytes` describe the planned work, while converted/output bytes remain zero. Failures still produce a nonzero exit status.
+
+### Conversion and recovery safety
+
+The converter writes a complete result into a temporary sibling directory, checks that it exists and is not empty, then publishes it. The previous destination is retained through the publication step so a failed replacement can be rolled back. Staging needs **temporary free space on the output filesystem**, potentially as large as the encoded result. Files left in a hidden `.rusty-crunch-stage-*` directory after a rare publication/rollback failure should be inspected manually before cleanup.
+
+`Restore` refuses to remove files that have changed since conversion and conservatively refuses to delete unverified outputs from older history records. It does **not** restore an older destination overwritten using `--conflict overwrite`; keep external backups of important outputs. The undo system currently records conversions to new output paths, not in-place same-extension rewrites. Always test irreversible workflows on disposable samples before using `--delete-originals`.
 
 ### Recommended Crunch
 
@@ -165,8 +190,8 @@ All state lives under `~/.config/rusty-crunch/` (Linux), `~/Library/Application 
 | Path | Purpose |
 |------|---------|
 | `config.json` | Settings + agent rules. |
-| `opt_cache.json` | Optimization cache (size + mtime). |
-| `history/session_<unix>.json` | Restore history for the last session. |
+| `opt_cache.json` | Optimization cache (size + nanosecond-resolution mtime). |
+| `history/session_<id>.json` | Restore history; new session IDs are unique even for jobs started in the same second. |
 | `history/backups/…` | Original files kept for restore. |
 | `agent.pid` / `agent.log` | Agent lifecycle + log. |
 
