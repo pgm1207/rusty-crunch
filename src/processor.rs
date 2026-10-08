@@ -638,7 +638,7 @@ fn run_with_index(job: &Job, index: Option<&FileIndex>) -> Result<ConversionSumm
         );
         if saved > 0 {
             println!(
-                "  {} {} saved",
+                "  {} {} estimated output reduction",
                 style("┃").dim(),
                 style(util::human_bytes(saved)).cyan().bold(),
             );
@@ -868,7 +868,7 @@ pub fn restore_last_session() -> Result<()> {
 
     if failures == 0 {
         // Prevent a second undo from acting on the same session.
-        let _ = std::fs::remove_file(&path);
+        std::fs::remove_file(&path)?;
     }
 
     println!(
@@ -879,6 +879,9 @@ pub fn restore_last_session() -> Result<()> {
         style(failures).yellow().bold(),
     );
 
+    if failures > 0 {
+        anyhow::bail!("Restore could not safely process {failures} file(s). See diagnostics above.");
+    }
     Ok(())
 }
 
@@ -896,6 +899,7 @@ struct StatsSummary {
     sessions: usize,
     files_converted: usize,
     bytes_saved: u64,
+    backup_bytes: u64,
 }
 
 /// `--history`: list conversion sessions, newest first.
@@ -920,7 +924,7 @@ pub fn print_history(json: bool) -> Result<()> {
             session_id: rec.session_id,
             created_unix: rec.created_unix,
             files_converted: rec.files_converted,
-            backups: rec.entries.len(),
+            backups: rec.entries.iter().filter(|e| e.backup_path.is_some()).count(),
             bytes_saved: rec.bytes_saved,
         })
         .collect();
@@ -943,7 +947,7 @@ pub fn print_history(json: bool) -> Result<()> {
     );
     for rec in &summaries {
         println!(
-            "  {} session {} — {} converted, {} backup(s), {} saved  {}",
+            "  {} session {} — {} converted, {} backup(s), {} output reduction  {}",
             style("•").dim(),
             style(rec.session_id).cyan().bold(),
             rec.files_converted,
@@ -975,11 +979,22 @@ pub fn print_stats(json: bool) -> Result<()> {
         }
     }
 
+    // Undo backups retain originals, so size reduction is not necessarily
+    // freed storage. Expose their actual current storage use.
+    let backup_bytes = WalkDir::new(dir.join("backups"))
+        .into_iter()
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| entry.file_type().is_file())
+        .filter_map(|entry| entry.metadata().ok())
+        .map(|metadata| metadata.len())
+        .sum::<u64>();
+
     if json {
         let summary = StatsSummary {
             sessions,
             files_converted: files,
             bytes_saved: saved,
+            backup_bytes,
         };
         println!("{}", serde_json::to_string_pretty(&summary)?);
         return Ok(());
@@ -1002,12 +1017,17 @@ pub fn print_stats(json: bool) -> Result<()> {
             if files == 1 { "" } else { "s" },
         );
         println!(
-            "  {} {} reclaimed",
+            "  {} estimated output size reduction",
             style("•").dim(),
             style(crate::util::human_bytes(saved)).green().bold(),
         );
         println!();
     }
+    println!(
+        "  {} {} retained original backups",
+        style("•").dim(),
+        style(crate::util::human_bytes(backup_bytes)).yellow(),
+    );
     Ok(())
 }
 

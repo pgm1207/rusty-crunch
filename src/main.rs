@@ -498,7 +498,7 @@ fn run_noninteractive(cli: &Cli) -> Result<()> {
         let failed: usize = summaries.iter().map(|s| s.files_failed).sum();
         let saved: u64 = summaries.iter().map(|s| s.bytes_saved).sum();
         println!(
-            "\n  {} {} file{} converted, {} failed, {} saved",
+            "\n  {} {} file{} converted, {} failed, {} estimated output reduction",
             style("\u{2714}").green().bold(),
             converted,
             if converted == 1 { "" } else { "s" },
@@ -1097,7 +1097,7 @@ fn maybe_notify(cli: &Cli, summaries: &[processor::ConversionSummary]) {
     util::notify(
         "rusty-crunch",
         &format!(
-            "{converted} file(s) converted, {failed} failed, {} reclaimed",
+            "{converted} file(s) converted, {failed} failed, {} estimated size reduction",
             util::human_bytes(saved)
         ),
     );

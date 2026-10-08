@@ -2,6 +2,35 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.7.0] - Unreleased
+
+### Performance
+- Index each recommended batch's input directory once, then reuse file paths across conversion formats.
+- Skip generated output subtrees during recursive input discovery.
+- Allow bounded worker concurrency through `--threads N` (1 to 64), preserving the video encoder concurrency cap.
+
+### Reliability and compatibility
+- Stage conversion results in a temporary directory on the destination filesystem and publish using a single rename.
+- Validate converted results before replacing existing destinations.
+- Avoid racing when multiple workers produce the same filename, preserving separate outputs.
+- Fix LibreOffice output naming when converting to a custom destination.
+- Preserve backups for undoable in-place same-format rewriting when `--delete-originals` is enabled.
+- Refuse to delete modified or unverified files during restore; make restore failures return a nonzero exit status.
+- Improve cache modification-time resolution to detect rapid file changes.
+- Add regression tests for failed conversion recovery, JSON, CLI validation and undo.
+- Extend CI builds and tests to macOS and Windows in addition to Linux.
+
+### Features and usability
+- Add `--output-subfolder NAME` and `--keep-originals` to scripting mode.
+- Provide clean `--json` output and include matched, input/output and growth metrics.
+- Expose history and cumulative statistics through the interactive menu.
+- Show retained original backup storage separately from estimated compression reductions.
+
+### Notes
+- `--delete-originals` archives originals for recovery. It does not immediately free their storage.
+- Restoring a previously overwritten destination that was not retained as an undo backup is not supported.
+
+
 ## [0.6.1] — 2026-09-29
 
 ### Added

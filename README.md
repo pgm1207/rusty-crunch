@@ -125,7 +125,7 @@ rusty-crunch --mode restore
 | `-y, --yes` | Non-interactive: use config defaults, skip all prompts. |
 | `--mode <optimize\|upscale\|restore>` | Non-interactive action (default `optimize`). |
 | `--recursive` / `--no-recursive` | Override the config default for sub-folder scanning. |
-| `--delete-originals` | Move successfully converted originals into restore backups. |
+| `--delete-originals` | Move successfully converted originals into restore backups. Backups continue occupying storage until separately removed. |
 | `--keep-originals` | Override a saved delete-originals default; incompatible with `--delete-originals`. |
 | `--threads N` | Set maximum parallel conversions (1 to 64); video still capped at 2 jobs. |
 | `--output-subfolder NAME` | Write outputs into a single named subdirectory, preserving relative paths. |
@@ -141,7 +141,7 @@ rusty-crunch --mode restore
 | `--check-update` | Report a newer release without installing it. |
 | `--self-update` | Download and install the latest release (checksum-verified). |
 | `--history` | List recorded conversion sessions (newest first). |
-| `--stats` | Show cumulative files converted and space reclaimed. |
+| `--stats` | Show cumulative conversions, estimated size reduction and retained backup storage. |
 | `--notify` | Send a desktop notification when a batch finishes. |
 | `-v, --verbose` | Verbose diagnostics (also written to the log file). |
 | `-q, --quiet` | Suppress non-essential output. |
@@ -151,11 +151,11 @@ rusty-crunch --mode restore
 
 ### JSON summary fields
 
-Non-interactive `--json` prints an array of conversion summaries. The relevant per-format fields are `files_matched` (selected files), `files_converted`, `files_skipped`, `files_failed`, `input_bytes`, `output_bytes`, `bytes_saved`, `bytes_added`, and `duration_secs`. With `--dry-run`, `files_matched` and `input_bytes` describe the planned work, while converted/output bytes remain zero. Failures still produce a nonzero exit status.
+Non-interactive `--json` prints an array of conversion summaries. `bytes_saved` means theoretical reduction between successful conversion input and output sizes, **not** actual filesystem space reclaimed when originals or restore backups are retained. `--stats --json` also reports `backup_bytes`, the current size of retained original backups. The relevant per-format fields are `files_matched` (selected files), `files_converted`, `files_skipped`, `files_failed`, `input_bytes`, `output_bytes`, `bytes_saved`, `bytes_added`, and `duration_secs`. With `--dry-run`, `files_matched` and `input_bytes` describe the planned work, while converted/output bytes remain zero. Failures still produce a nonzero exit status.
 
 ### Conversion and recovery safety
 
-The converter writes a complete result into a temporary sibling directory, checks that it exists and is not empty, then publishes it. The previous destination is retained through the publication step so a failed replacement can be rolled back. Staging needs **temporary free space on the output filesystem**, potentially as large as the encoded result. Files left in a hidden `.rusty-crunch-stage-*` directory after a rare publication/rollback failure should be inspected manually before cleanup.
+The converter writes a complete result into a temporary sibling directory, checks that it exists and is not empty, then publishes it. A single filesystem rename publishes the finished file, leaving an existing destination intact if publication fails or is interrupted. Staging needs **temporary free space on the output filesystem**, potentially as large as the encoded result. Files left in a hidden `.rusty-crunch-stage-*` directory after a failed publication should be inspected manually before cleanup.
 
 `Restore` refuses to remove files that have changed since conversion and conservatively refuses to delete unverified outputs from older history records. It does **not** restore an older destination overwritten using `--conflict overwrite`; keep external backups of important outputs. In-place same-extension rewrites done with `--delete-originals` are also backed up and can be restored. Without that flag, same-extension jobs write a renamed output instead of changing the original. The agent's automatic conversions do not create undo history. Always test irreversible workflows on disposable samples before using `--delete-originals`.
 
