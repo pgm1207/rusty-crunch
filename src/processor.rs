@@ -1023,7 +1023,7 @@ pub fn print_stats(json: bool) -> Result<()> {
             if files == 1 { "" } else { "s" },
         );
         println!(
-            "  {} estimated output size reduction",
+            "  {} {} estimated output size reduction",
             style("•").dim(),
             style(crate::util::human_bytes(saved)).green().bold(),
         );
