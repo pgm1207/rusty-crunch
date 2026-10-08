@@ -105,6 +105,54 @@ pub struct ConversionSummary {
     pub compression_worst_percent: f64,
 }
 
+/// Reserve an output name before any conversion starts. Files such as `a.jpg`
+/// and `a.jpeg` otherwise race to publish the same `a.avif` under parallel
+/// execution. Reservations also make rename suffixes deterministic.
+fn reserve_output(
+    desired: PathBuf,
+    input: &Path,
+    same_ext: bool,
+    delete_originals: bool,
+    conflict: crate::config::ConflictStrategy,
+    reserved: &Mutex<HashSet<PathBuf>>,
+) -> Option<PathBuf> {
+    let mut taken = reserved.lock().unwrap_or_else(|e| e.into_inner());
+    let inplace = same_ext && desired == input && delete_originals;
+    let already_reserved = taken.contains(&desired);
+    let exists = desired.symlink_metadata().is_ok();
+    let mut strategy = conflict;
+    if same_ext && desired == input && !delete_originals {
+        strategy = crate::config::ConflictStrategy::Rename;
+    } else if already_reserved && strategy == crate::config::ConflictStrategy::Overwrite {
+        // Never allow two jobs in this batch to target the same path.
+        strategy = crate::config::ConflictStrategy::Rename;
+    }
+
+    let selected = if !inplace && (exists || already_reserved) {
+        match strategy {
+            crate::config::ConflictStrategy::Skip => return None,
+            crate::config::ConflictStrategy::Overwrite => desired,
+            crate::config::ConflictStrategy::Rename => {
+                let stem = desired.file_stem()?.to_string_lossy();
+                let extension = desired.extension()?.to_string_lossy();
+                let parent = desired.parent()?;
+                let mut index = 1u64;
+                loop {
+                    let candidate = parent.join(format!("{stem}.{index}.{extension}"));
+                    if candidate.symlink_metadata().is_err() && !taken.contains(&candidate) {
+                        break candidate;
+                    }
+                    index = index.checked_add(1)?;
+                }
+            }
+        }
+    } else {
+        desired
+    };
+    taken.insert(selected.clone());
+    Some(selected)
+}
+
 pub fn run(job: &Job) -> Result<ConversionSummary> {
     let input_ext = job.input_fmt.to_ascii_lowercase();
     let output_ext = match job.output_fmt {
@@ -133,6 +181,7 @@ pub fn run(job: &Job) -> Result<ConversionSummary> {
     }
 
     // ── Load optimization cache (for same-extension jobs like PDF → PDF) ──
+    let reserved_paths = Mutex::new(HashSet::<PathBuf>::new());
     let cache = Mutex::new(if same_ext {
         load_opt_cache()
     } else {
@@ -316,6 +365,7 @@ pub fn run(job: &Job) -> Result<ConversionSummary> {
                 let output_ext = output_ext.clone();
                 let pb = pb.clone();
                 let cache = &cache;
+                let reserved_paths = &reserved_paths;
                 let skip_count = &skip_count;
                 let ok_count = &ok_count;
                 let err_count = &err_count;
@@ -360,53 +410,18 @@ pub fn run(job: &Job) -> Result<ConversionSummary> {
                     };
 
                     // Staging creates the destination parent and propagates errors.
-                    let mut final_output_path = output_path;
-
-                    let is_inplace_intent =
-                        same_ext && final_output_path == input_path && job.delete_originals;
-
-                    // Handle conflicts if output already exists (unless it's an intended in-place replacement)
-                    if !is_inplace_intent && final_output_path.exists() {
-                        // For same extension workflows (like MKV->MKV upscale), if the output exactly equals the input
-                        // but we aren't doing in-place replacement, we MUST force a rename so we don't accidentally skip or overwrite the source.
-                        let strategy = if same_ext && final_output_path == input_path {
-                            crate::config::ConflictStrategy::Rename
-                        } else {
-                            job.conflict_strategy
-                        };
-
-                        match strategy {
-                            crate::config::ConflictStrategy::Skip => {
-                                skip_count.fetch_add(1, Ordering::Relaxed);
-                                pb.inc(1);
-                                return;
-                            }
-                            crate::config::ConflictStrategy::Overwrite => {
-                                // Do nothing, file will be overwritten by converter
-                            }
-                            crate::config::ConflictStrategy::Rename => {
-                                let mut counter = 1;
-                                let file_stem = final_output_path
-                                    .file_stem()
-                                    .unwrap_or_default()
-                                    .to_string_lossy()
-                                    .to_string();
-                                let folder = final_output_path
-                                    .parent()
-                                    .unwrap_or_else(|| std::path::Path::new(""));
-                                loop {
-                                    let new_name =
-                                        format!("{}.{}.{}", file_stem, counter, output_ext);
-                                    let candidate = folder.join(new_name);
-                                    if !candidate.exists() {
-                                        final_output_path = candidate;
-                                        break;
-                                    }
-                                    counter += 1;
-                                }
-                            }
-                        }
-                    }
+                    let Some(final_output_path) = reserve_output(
+                        output_path,
+                        &input_path,
+                        same_ext,
+                        job.delete_originals,
+                        job.conflict_strategy,
+                        reserved_paths,
+                    ) else {
+                        skip_count.fetch_add(1, Ordering::Relaxed);
+                        pb.inc(1);
+                        return;
+                    };
 
                     // Skip files already optimized (same-extension jobs like PDF → PDF)
                     if same_ext && !job.force_recheck {
@@ -564,13 +579,19 @@ pub fn run(job: &Job) -> Result<ConversionSummary> {
         Err(p) => p.into_inner(),
     };
     if !entries.is_empty() {
-        let _ = save_history_record(&HistoryRecord {
+        if let Err(error) = save_history_record(&HistoryRecord {
             session_id,
             created_unix,
             entries,
             files_converted: ok_count.load(Ordering::Relaxed),
             bytes_saved: saved_bytes.load(Ordering::Relaxed),
-        });
+        }) {
+            util::log_event("ERROR", &format!("Could not persist undo history: {error}"));
+            if job.delete_originals {
+                return Err(error);
+            }
+            eprintln!("Warning: could not save conversion history: {error}");
+        }
     }
 
     // ── Summary ─────────────────────────────────────────────────────
@@ -1121,6 +1142,52 @@ pub fn has_matching_files(folder: &Path, input_fmt: &str, recursive: bool) -> bo
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn output_reservations_prevent_parallel_collisions() {
+        let claimed = Mutex::new(HashSet::new());
+        let dir = std::env::temp_dir().join(format!(
+            "rc-output-reserve-{}", std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let desired = dir.join("a.avif");
+        let input_a = dir.join("a.jpg");
+        let input_b = dir.join("a.jpeg");
+        let first = reserve_output(
+            desired.clone(),
+            &input_a,
+            false,
+            false,
+            crate::config::ConflictStrategy::Overwrite,
+            &claimed,
+        ).unwrap();
+        let second = reserve_output(
+            desired.clone(),
+            &input_b,
+            false,
+            false,
+            crate::config::ConflictStrategy::Overwrite,
+            &claimed,
+        ).unwrap();
+        assert_eq!(first, desired);
+        assert_eq!(second, dir.join("a.1.avif"));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn scanned_formats_ignore_existing_output_subtrees() {
+        let dir = std::env::temp_dir().join(format!(
+            "rc-scan-exclude-{}", std::process::id()
+        ));
+        let output = dir.join("converted");
+        std::fs::create_dir_all(&output).unwrap();
+        std::fs::write(dir.join("a.jpg"), b"x").unwrap();
+        std::fs::write(output.join("b.mp3"), b"x").unwrap();
+        let found = scan_formats(&dir, true, Some("converted"));
+        assert!(scanned_has_format(&found, "jpeg"));
+        assert!(!scanned_has_format(&found, "mp3"));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn cache_entry_matches_unchanged_file() {
