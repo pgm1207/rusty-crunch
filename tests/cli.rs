@@ -191,15 +191,31 @@ fn dry_run_json_is_valid_and_counts_matches() {
     // Generated files should be ignored when scanning for new work.
     fs::write(output.join("another.bmp"), b"old").unwrap();
     let run = cmd(&s)
-        .args(["--yes", "--dry-run", "--json", "--threads", "2",
-               "--output-subfolder", "converted"])
+        .args([
+            "--yes",
+            "--dry-run",
+            "--json",
+            "--threads",
+            "2",
+            "--output-subfolder",
+            "converted",
+        ])
         .arg(&folder)
         .output()
         .unwrap();
-    assert!(run.status.success(), "{}", String::from_utf8_lossy(&run.stderr));
+    assert!(
+        run.status.success(),
+        "{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
     let json: serde_json::Value =
         serde_json::from_slice(&run.stdout).expect("stdout must contain only JSON");
-    let images = json.as_array().unwrap().iter().find(|x| x["input_format"] == "BMP").unwrap();
+    let images = json
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|x| x["input_format"] == "BMP")
+        .unwrap();
     assert_eq!(images["files_matched"], 1);
     assert_eq!(images["input_bytes"], 5);
     assert_eq!(images["files_converted"], 0);
@@ -246,13 +262,26 @@ fn failing_converter_does_not_damage_existing_output() {
         .env("PATH", full_path)
         .output()
         .unwrap();
-    assert!(!run.status.success(), "a failing converter unexpectedly succeeded");
-    assert_eq!(fs::read(folder.join("picture.png")).unwrap(), b"valuable previous output");
-    assert_eq!(fs::read(folder.join("picture.bmp")).unwrap(), b"source image");
     assert!(
-        fs::read_dir(&folder).unwrap()
+        !run.status.success(),
+        "a failing converter unexpectedly succeeded"
+    );
+    assert_eq!(
+        fs::read(folder.join("picture.png")).unwrap(),
+        b"valuable previous output"
+    );
+    assert_eq!(
+        fs::read(folder.join("picture.bmp")).unwrap(),
+        b"source image"
+    );
+    assert!(
+        fs::read_dir(&folder)
+            .unwrap()
             .filter_map(|entry| entry.ok())
-            .all(|entry| !entry.file_name().to_string_lossy().starts_with(".rusty-crunch-stage-")),
+            .all(|entry| !entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".rusty-crunch-stage-")),
         "abandoned staging files after a failed conversion"
     );
 }
@@ -278,12 +307,28 @@ fn converter_publishes_completed_output_without_deleting_input() {
     let mut paths = vec![tools.clone()];
     paths.extend(std::env::split_paths(&inherited_path));
     let run = cmd(&s)
-        .args(["--yes", "--output-subfolder", "compressed", "--threads", "2"])
+        .args([
+            "--yes",
+            "--output-subfolder",
+            "compressed",
+            "--threads",
+            "2",
+        ])
         .arg(&folder)
         .env("PATH", std::env::join_paths(paths).unwrap())
         .output()
         .unwrap();
-    assert!(run.status.success(), "{}", String::from_utf8_lossy(&run.stderr));
-    assert_eq!(fs::read(folder.join("compressed/picture.png")).unwrap(), b"complete conversion");
-    assert_eq!(fs::read(folder.join("picture.bmp")).unwrap(), b"source image");
+    assert!(
+        run.status.success(),
+        "{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert_eq!(
+        fs::read(folder.join("compressed/picture.png")).unwrap(),
+        b"complete conversion"
+    );
+    assert_eq!(
+        fs::read(folder.join("picture.bmp")).unwrap(),
+        b"source image"
+    );
 }
