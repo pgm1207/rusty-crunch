@@ -231,14 +231,12 @@ fn run_with_index(job: &Job, index: Option<&FileIndex>) -> Result<ConversionSumm
     };
     let mut files: Vec<PathBuf> = candidates
         .into_iter()
-        .filter(|path| {
-            match path.metadata() {
-                Ok(meta) => {
-                    job.min_file_size.is_none_or(|min| meta.len() >= min)
-                        && job.max_file_size.is_none_or(|max| meta.len() <= max)
-                }
-                Err(_) => false,
+        .filter(|path| match path.metadata() {
+            Ok(meta) => {
+                job.min_file_size.is_none_or(|min| meta.len() >= min)
+                    && job.max_file_size.is_none_or(|max| meta.len() <= max)
             }
+            Err(_) => false,
         })
         .collect();
 
@@ -1168,11 +1166,7 @@ impl FileIndex {
     }
 }
 
-pub fn index_files(
-    folder: &Path,
-    recursive: bool,
-    output_subfolder: Option<&str>,
-) -> FileIndex {
+pub fn index_files(folder: &Path, recursive: bool, output_subfolder: Option<&str>) -> FileIndex {
     let output_root = output_subfolder.map(|sub| folder.join(sub));
     let mut by_extension: HashMap<String, Vec<PathBuf>> = HashMap::new();
     for entry in WalkDir::new(folder)
