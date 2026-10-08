@@ -869,6 +869,7 @@ fn process_file(path: &Path, rule: &AgentRule, rt: &tokio::runtime::Runtime) -> 
             keep_metadata: true,
             video_scale: crate::processor::VideoScale::Original,
             image_scale: crate::processor::ImageScale::Original,
+            restore_backup: None,
         },
     )) {
         Ok(()) => {
@@ -893,9 +894,8 @@ fn process_file(path: &Path, rule: &AgentRule, rt: &tokio::runtime::Runtime) -> 
                 style(name.as_ref()).dim(),
                 style(e).red(),
             );
-            if !same_ext {
-                let _ = std::fs::remove_file(&output_path);
-            }
+            // The transactional converter has already cleaned failed staging
+            // output. Never remove an existing destination on failure.
             false
         }
     }

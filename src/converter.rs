@@ -45,33 +45,120 @@ pub struct ConversionOptions<'a> {
     pub keep_metadata: bool,
     pub video_scale: VideoScale,
     pub image_scale: ImageScale,
+    /// Preserve the previous destination for an undoable in-place conversion.
+    /// Copies are intentional: the history folder can live on another volume.
+    pub restore_backup: Option<&'a Path>,
+}
+
+/// Create a unique staging directory *beside* the output. Publishing is then a
+/// same-filesystem rename, including when the source lives on another volume.
+static STAGING_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn staging_dir(output: &Path) -> Result<std::path::PathBuf> {
+    let parent = output.parent().context("Output has no parent directory")?;
+    std::fs::create_dir_all(parent)?;
+    for _ in 0..128 {
+        let id = STAGING_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = parent.join(format!(".rusty-crunch-stage-{}-{id}", std::process::id()));
+        match std::fs::create_dir(&dir) {
+            Ok(()) => return Ok(dir),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e).context("Could not create conversion staging directory"),
+        }
+    }
+    bail!("Could not allocate a unique staging directory")
+}
+
+/// Publish a completely written file with a *single* same-filesystem rename.
+/// This keeps the previous destination visible until the replacement is ready:
+/// a crash or failed rename cannot leave it temporarily absent.
+fn publish_staged(staged: &Path, destination: &Path, restore_backup: Option<&Path>) -> Result<()> {
+    if let Ok(meta) = destination.symlink_metadata() {
+        if meta.is_dir() {
+            bail!("Refusing to replace a directory: {}", destination.display());
+        }
+    }
+
+    // An in-place rewrite with undo enabled must retain the original content.
+    // Copy it to persistent history first; failure aborts before publication.
+    if let Some(path) = restore_backup {
+        if destination.symlink_metadata().is_err() {
+            bail!(
+                "Cannot back up missing destination {}",
+                destination.display()
+            );
+        }
+        if path.symlink_metadata().is_ok() {
+            bail!(
+                "Refusing to overwrite existing restore backup {}",
+                path.display()
+            );
+        }
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::copy(destination, path).with_context(|| {
+            format!(
+                "Could not back up {} to {}",
+                destination.display(),
+                path.display()
+            )
+        })?;
+    }
+
+    // Rust's rename replaces an existing regular file on supported platforms.
+    // Because the staging directory is a sibling, this rename is on the same
+    // filesystem and is atomic on filesystems that support atomic rename.
+    std::fs::rename(staged, destination)
+        .with_context(|| format!("Could not publish {}", destination.display()))
 }
 
 pub async fn convert(input: &Path, output: &Path, opts: ConversionOptions<'_>) -> Result<()> {
-    // Audio performs its own in-place swap internally (writes a .tmp then renames).
-    // For everything else, if input == output we must never let the external tool
-    // read and write the same file, so convert to a sibling temp file and swap.
-    if input == output && opts.media_type != MediaType::Audio {
-        let ext = output
-            .extension()
-            .map(|e| e.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        let tmp = output.with_extension(format!("crunch-tmp.{ext}"));
-        let res = convert_dispatch(input, &tmp, &opts).await;
-        match res {
-            Ok(()) => {
-                std::fs::rename(&tmp, output)
-                    .with_context(|| format!("Failed to replace {}", output.display()))?;
-                Ok(())
-            }
-            Err(e) => {
-                let _ = std::fs::remove_file(&tmp);
-                Err(e)
-            }
-        }
-    } else {
-        convert_dispatch(input, output, &opts).await
+    let stage_dir = staging_dir(output)?;
+    // LibreOffice derives the output basename from the INPUT, not from the
+    // requested destination. Preserve the original stem inside its own outdir.
+    let stem = input.file_name().context("Input has no file name")?;
+    let extension = output.extension().context("Output has no file extension")?;
+    let staged = stage_dir.join(stem).with_extension(extension);
+
+    let conversion = convert_dispatch(input, &staged, &opts).await;
+    if let Err(error) = conversion {
+        let _ = std::fs::remove_dir_all(&stage_dir);
+        return Err(error);
     }
+
+    // Some tools exit with status 0 yet produce nothing (or an empty file).
+    let metadata = staged
+        .metadata()
+        .with_context(|| format!("Converter did not produce {}", staged.display()));
+    match metadata {
+        Ok(info) if info.is_file() && info.len() > 0 => {}
+        Ok(_) => {
+            let _ = std::fs::remove_dir_all(&stage_dir);
+            bail!(
+                "Converter produced an empty or invalid output for {}",
+                input.display()
+            );
+        }
+        Err(error) => {
+            let _ = std::fs::remove_dir_all(&stage_dir);
+            return Err(error);
+        }
+    }
+
+    // A failed publish leaves the original output intact. Keep the staged
+    // result for manual recovery (for example when a destination is locked).
+    publish_staged(&staged, output, opts.restore_backup)?;
+    if let Err(e) = std::fs::remove_dir_all(&stage_dir) {
+        crate::util::log_event(
+            "WARN",
+            &format!(
+                "Could not clean up staging directory {}: {e}",
+                stage_dir.display()
+            ),
+        );
+    }
+    Ok(())
 }
 
 async fn convert_dispatch(input: &Path, output: &Path, opts: &ConversionOptions<'_>) -> Result<()> {
@@ -650,7 +737,11 @@ async fn optimize_pdf(
     let run_future = run(&mut cmd, gs.as_str());
     let result = match tokio::time::timeout(std::time::Duration::from_secs(600), run_future).await {
         Ok(res) => res,
-        Err(_) => bail!("Ghostscript timed out after 10 minutes"),
+        Err(_) => {
+            let _ = std::fs::remove_file(&tmp_in);
+            let _ = std::fs::remove_file(&tmp_out);
+            bail!("Ghostscript timed out after 10 minutes")
+        }
     };
 
     // Always clean up the temp input file
@@ -705,5 +796,61 @@ async fn probe_video_dimensions(input: &Path) -> Option<(u32, u32)> {
         Some((w, h))
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod transaction_tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn scratch() -> std::path::PathBuf {
+        let id = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("rc-stage-test-{}-{id}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn staged_replacement_preserves_existing_file_until_publish() {
+        let dir = scratch();
+        let output = dir.join("result.txt");
+        std::fs::write(&output, b"original").unwrap();
+        let stage = staging_dir(&output).unwrap();
+        let staged = stage.join("generated.txt");
+        std::fs::write(&staged, b"replacement").unwrap();
+        assert_eq!(std::fs::read(&output).unwrap(), b"original");
+        publish_staged(&staged, &output, None).unwrap();
+        assert_eq!(std::fs::read(&output).unwrap(), b"replacement");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn publishing_in_place_can_retain_a_restorable_original() {
+        let dir = scratch();
+        let output = dir.join("original.pdf");
+        let old_copy = dir.join("history").join("original.pdf");
+        std::fs::write(&output, b"old version").unwrap();
+        let stage = staging_dir(&output).unwrap();
+        let staged = stage.join("new.pdf");
+        std::fs::write(&staged, b"optimized version").unwrap();
+        publish_staged(&staged, &output, Some(&old_copy)).unwrap();
+        assert_eq!(std::fs::read(&output).unwrap(), b"optimized version");
+        assert_eq!(std::fs::read(&old_copy).unwrap(), b"old version");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn failed_publish_does_not_delete_existing_destination() {
+        let dir = scratch();
+        let output = dir.join("result.txt");
+        std::fs::write(&output, b"original").unwrap();
+        let missing = dir.join("missing.txt");
+        assert!(publish_staged(&missing, &output, None).is_err());
+        assert_eq!(std::fs::read(&output).unwrap(), b"original");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }
