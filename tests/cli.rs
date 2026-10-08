@@ -180,3 +180,110 @@ fn history_and_stats_run_cleanly_on_empty_state() {
         );
     }
 }
+
+#[test]
+fn dry_run_json_is_valid_and_counts_matches() {
+    let s = Scratch::new("plan-json");
+    let folder = s.path().join("media");
+    let output = folder.join("converted");
+    fs::create_dir_all(&output).unwrap();
+    fs::write(folder.join("image.bmp"), b"input").unwrap();
+    // Generated files should be ignored when scanning for new work.
+    fs::write(output.join("another.bmp"), b"old").unwrap();
+    let run = cmd(&s)
+        .args(["--yes", "--dry-run", "--json", "--threads", "2",
+               "--output-subfolder", "converted"])
+        .arg(&folder)
+        .output()
+        .unwrap();
+    assert!(run.status.success(), "{}", String::from_utf8_lossy(&run.stderr));
+    let json: serde_json::Value =
+        serde_json::from_slice(&run.stdout).expect("stdout must contain only JSON");
+    let images = json.as_array().unwrap().iter().find(|x| x["input_format"] == "BMP").unwrap();
+    assert_eq!(images["files_matched"], 1);
+    assert_eq!(images["input_bytes"], 5);
+    assert_eq!(images["files_converted"], 0);
+}
+
+#[test]
+fn unsafe_output_subfolder_and_thread_count_are_rejected() {
+    let s = Scratch::new("invalid-controls");
+    for args in [
+        ["--yes", "--output-subfolder", "../escape"],
+        ["--yes", "--threads", "0"],
+        ["--yes", "--threads", "999"],
+    ] {
+        let output = cmd(&s).args(args).arg(s.path()).output().unwrap();
+        assert!(!output.status.success(), "{args:?} was accepted");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn failing_converter_does_not_damage_existing_output() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let s = Scratch::new("atomic-fail");
+    let folder = s.path().join("media");
+    let tools = s.path().join("fake-bin");
+    fs::create_dir_all(&folder).unwrap();
+    fs::create_dir_all(&tools).unwrap();
+    fs::write(folder.join("picture.bmp"), b"source image").unwrap();
+    fs::write(folder.join("picture.png"), b"valuable previous output").unwrap();
+    let magick = tools.join("magick");
+    fs::write(&magick, b"#!/bin/sh\nfor arg in \"$@\"; do output=\"$arg\"; done\nprintf 'partial' > \"$output\"\nexit 13\n").unwrap();
+    let mut permissions = fs::metadata(&magick).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&magick, permissions).unwrap();
+
+    let inherited_path = std::env::var_os("PATH").unwrap_or_default();
+    let mut paths = vec![tools.clone()];
+    paths.extend(std::env::split_paths(&inherited_path));
+    let full_path = std::env::join_paths(paths).unwrap();
+    let run = cmd(&s)
+        .args(["--yes", "--conflict", "overwrite", "--threads", "4"])
+        .arg(&folder)
+        .env("PATH", full_path)
+        .output()
+        .unwrap();
+    assert!(!run.status.success(), "a failing converter unexpectedly succeeded");
+    assert_eq!(fs::read(folder.join("picture.png")).unwrap(), b"valuable previous output");
+    assert_eq!(fs::read(folder.join("picture.bmp")).unwrap(), b"source image");
+    assert!(
+        fs::read_dir(&folder).unwrap()
+            .filter_map(|entry| entry.ok())
+            .all(|entry| !entry.file_name().to_string_lossy().starts_with(".rusty-crunch-stage-")),
+        "abandoned staging files after a failed conversion"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn converter_publishes_completed_output_without_deleting_input() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let s = Scratch::new("atomic-success");
+    let folder = s.path().join("media");
+    let tools = s.path().join("fake-bin");
+    fs::create_dir_all(&folder).unwrap();
+    fs::create_dir_all(&tools).unwrap();
+    fs::write(folder.join("picture.bmp"), b"source image").unwrap();
+    let magick = tools.join("magick");
+    fs::write(&magick, b"#!/bin/sh\nfor arg in \"$@\"; do output=\"$arg\"; done\nprintf 'complete conversion' > \"$output\"\n").unwrap();
+    let mut permissions = fs::metadata(&magick).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&magick, permissions).unwrap();
+
+    let inherited_path = std::env::var_os("PATH").unwrap_or_default();
+    let mut paths = vec![tools.clone()];
+    paths.extend(std::env::split_paths(&inherited_path));
+    let run = cmd(&s)
+        .args(["--yes", "--output-subfolder", "compressed", "--threads", "2"])
+        .arg(&folder)
+        .env("PATH", std::env::join_paths(paths).unwrap())
+        .output()
+        .unwrap();
+    assert!(run.status.success(), "{}", String::from_utf8_lossy(&run.stderr));
+    assert_eq!(fs::read(folder.join("compressed/picture.png")).unwrap(), b"complete conversion");
+    assert_eq!(fs::read(folder.join("picture.bmp")).unwrap(), b"source image");
+}
