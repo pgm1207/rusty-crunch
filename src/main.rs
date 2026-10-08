@@ -80,6 +80,18 @@ struct Cli {
     #[arg(long = "delete-originals")]
     delete_originals: bool,
 
+    /// Never remove original files, even if the saved config enables removal
+    #[arg(long = "keep-originals", conflicts_with = "delete_originals")]
+    keep_originals: bool,
+
+    /// Maximum number of concurrent conversion jobs (default: config preset)
+    #[arg(long, value_name = "N")]
+    threads: Option<usize>,
+
+    /// Write converted files into a named subfolder (non-interactive supported)
+    #[arg(long = "output-subfolder", value_name = "NAME")]
+    output_subfolder: Option<String>,
+
     /// Re-process files even if they were already optimized (non-interactive)
     #[arg(long = "force-recheck")]
     force_recheck: bool,
@@ -135,6 +147,17 @@ struct Cli {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    if cli.threads == Some(0) {
+        anyhow::bail!("--threads must be at least 1");
+    }
+    if let Some(name) = cli.output_subfolder.as_deref() {
+        let mut parts = std::path::Path::new(name).components();
+        if !matches!(parts.next(), Some(std::path::Component::Normal(_)))
+            || parts.next().is_some()
+        {
+            anyhow::bail!("--output-subfolder must be a single folder name (not a path)");
+        }
+    }
 
     // Respect --no-color, the NO_COLOR convention, and non-TTY output.
     if cli.no_color || std::env::var_os("NO_COLOR").is_some() || !console::user_attended() {
@@ -142,7 +165,7 @@ fn main() -> Result<()> {
     }
 
     util::set_verbose(cli.verbose);
-    util::set_quiet(cli.quiet);
+    util::set_quiet(cli.quiet || cli.json);
     util::log_event(
         "INFO",
         &format!("rusty-crunch v{} started", env!("CARGO_PKG_VERSION")),
@@ -279,6 +302,9 @@ fn run_noninteractive(cli: &Cli) -> Result<()> {
     if cli.max_size.is_some() && max_size.is_none() {
         anyhow::bail!("Invalid --max-size format. Use: 500MB, 2GB, 100MB, etc.");
     }
+    if min_size.zip(max_size).is_some_and(|(min, max)| min > max) {
+        anyhow::bail!("--min-size must be less than or equal to --max-size");
+    }
 
     let folder = cli
         .folder
@@ -300,7 +326,7 @@ fn run_noninteractive(cli: &Cli) -> Result<()> {
     } else {
         cfg.default_recursive
     };
-    let delete = cli.delete_originals || cfg.default_delete_originals;
+    let delete = !cli.keep_originals && (cli.delete_originals || cfg.default_delete_originals);
     let conflict = match cli.conflict.as_deref() {
         Some("overwrite") => config::ConflictStrategy::Overwrite,
         Some("rename") => config::ConflictStrategy::Rename,
@@ -312,7 +338,8 @@ fn run_noninteractive(cli: &Cli) -> Result<()> {
         Some("medium") => processor::Quality::Medium,
         _ => processor::Quality::High,
     };
-    let threads = util::active_threads();
+    let threads = cli.threads.unwrap_or_else(util::active_threads);
+    let discovered = processor::scan_formats(&folder, recursive, cli.output_subfolder.as_deref());
 
     if !cli.json {
         println!(
@@ -347,11 +374,14 @@ fn run_noninteractive(cli: &Cli) -> Result<()> {
             .formats()
             .iter()
             .copied()
-            .filter(|f| processor::has_matching_files(&folder, f, recursive))
+            .filter(|f| processor::scanned_has_format(&discovered, f))
             .collect();
         if applicable.is_empty() {
             if !cli.json {
                 println!("  {} No video files found.", style("\u{26a0}").yellow());
+            }
+            if cli.json {
+                println!("[]");
             }
             return Ok(());
         }
@@ -369,7 +399,7 @@ fn run_noninteractive(cli: &Cli) -> Result<()> {
                 force_recheck: cli.force_recheck,
                 dry_run: cli.dry_run,
                 threads,
-                output_subfolder: None,
+                output_subfolder: cli.output_subfolder.as_deref(),
                 min_file_size: min_size,
                 max_file_size: max_size,
                 conflict_strategy: conflict,
@@ -389,7 +419,7 @@ fn run_noninteractive(cli: &Cli) -> Result<()> {
             .iter()
             .copied()
             .filter(|(_, input_fmt, _)| {
-                processor::has_matching_files(&folder, input_fmt, recursive)
+                processor::scanned_has_format(&discovered, input_fmt)
             })
             .collect();
         if applicable.is_empty() {
@@ -398,6 +428,9 @@ fn run_noninteractive(cli: &Cli) -> Result<()> {
                     "  {} No files found that can be optimized.",
                     style("\u{26a0}").yellow()
                 );
+            }
+            if cli.json {
+                println!("[]");
             }
             return Ok(());
         }
@@ -419,7 +452,7 @@ fn run_noninteractive(cli: &Cli) -> Result<()> {
                 force_recheck: cli.force_recheck,
                 dry_run: cli.dry_run,
                 threads,
-                output_subfolder: None,
+                output_subfolder: cli.output_subfolder.as_deref(),
                 min_file_size: min_size,
                 max_file_size: max_size,
                 conflict_strategy: conflict,
@@ -540,7 +573,10 @@ fn run_crunch(cli: &Cli, forced_mode: Option<prompt::CrunchMode>) -> Result<()> 
         None => return Ok(()),
     };
 
-    let subfolder = prompt::select_output_destination()?;
+    let subfolder = match cli.output_subfolder.as_ref() {
+        Some(sub) => Some(sub.clone()),
+        None => prompt::select_output_destination()?,
+    };
     if let Some(ref s) = subfolder {
         ack("Output sub-folder", s);
     }
@@ -743,7 +779,7 @@ fn run_crunch(cli: &Cli, forced_mode: Option<prompt::CrunchMode>) -> Result<()> 
         }
     }
 
-    let threads = util::active_threads();
+    let threads = cli.threads.unwrap_or_else(util::active_threads);
 
     // ── Run all jobs ─────────────────────────────────────────────────
     let mut summaries = Vec::new();
@@ -850,7 +886,10 @@ fn run_recommended_upscale(cli: &Cli) -> Result<()> {
         None => return Ok(()),
     };
 
-    let subfolder = prompt::select_output_destination()?;
+    let subfolder = match cli.output_subfolder.as_ref() {
+        Some(sub) => Some(sub.clone()),
+        None => prompt::select_output_destination()?,
+    };
     if let Some(ref s) = subfolder {
         ack("Output sub-folder", s);
     }
@@ -879,11 +918,12 @@ fn run_recommended_upscale(cli: &Cli) -> Result<()> {
         },
     );
 
+    let discovered = processor::scan_formats(&folder, recursive, subfolder.as_deref());
     let video_inputs = formats::MediaType::Video.formats();
     let applicable: Vec<&str> = video_inputs
         .iter()
         .copied()
-        .filter(|input_fmt| processor::has_matching_files(&folder, input_fmt, recursive))
+        .filter(|input_fmt| processor::scanned_has_format(&discovered, input_fmt))
         .collect();
 
     if applicable.is_empty() {
@@ -925,7 +965,7 @@ fn run_recommended_upscale(cli: &Cli) -> Result<()> {
         deps::ensure(formats::MediaType::Video)?;
     }
 
-    let threads = util::active_threads();
+    let threads = cli.threads.unwrap_or_else(util::active_threads);
     let mut summaries = Vec::new();
     for input_fmt in &applicable {
         println!(
@@ -1108,7 +1148,10 @@ fn run_recommended_crunch(cli: &Cli) -> Result<()> {
         None => return Ok(()),
     };
 
-    let subfolder = prompt::select_output_destination()?;
+    let subfolder = match cli.output_subfolder.as_ref() {
+        Some(sub) => Some(sub.clone()),
+        None => prompt::select_output_destination()?,
+    };
     if let Some(ref s) = subfolder {
         ack("Output sub-folder", s);
     }
@@ -1122,11 +1165,12 @@ fn run_recommended_crunch(cli: &Cli) -> Result<()> {
     };
 
     // ── Scan for applicable conversions ─────────────────────────────
+    let discovered = processor::scan_formats(&folder, recursive, subfolder.as_deref());
     let all_conversions = formats::recommended_conversions();
     let applicable: Vec<(formats::MediaType, &str, &str)> = all_conversions
         .iter()
         .copied()
-        .filter(|(_, input_fmt, _)| processor::has_matching_files(&folder, input_fmt, recursive))
+        .filter(|(_, input_fmt, _)| processor::scanned_has_format(&discovered, input_fmt))
         .collect();
 
     if applicable.is_empty() {
@@ -1176,7 +1220,7 @@ fn run_recommended_crunch(cli: &Cli) -> Result<()> {
     }
 
     // ── Run conversions ─────────────────────────────────────────────
-    let threads = util::active_threads();
+    let threads = cli.threads.unwrap_or_else(util::active_threads);
     let mut summaries = Vec::new();
     for &(media_type, input_fmt, output_fmt) in &applicable {
         println!(
