@@ -607,56 +607,56 @@ pub fn run(job: &Job) -> Result<ConversionSummary> {
     if !util::is_quiet() {
         println!();
         println!("  {}", style("─".repeat(50)).dim());
-    println!(
-        "  {} {} converted   {} skipped   {} failed",
-        style("┃").dim(),
-        style(ok).green().bold(),
-        style(skipped).yellow(),
-        if errs > 0 {
-            style(errs).red().bold()
+        println!(
+            "  {} {} converted   {} skipped   {} failed",
+            style("┃").dim(),
+            style(ok).green().bold(),
+            style(skipped).yellow(),
+            if errs > 0 {
+                style(errs).red().bold()
+            } else {
+                style(errs).green().bold()
+            },
+        );
+        if saved > 0 {
+            println!(
+                "  {} {} saved",
+                style("┃").dim(),
+                style(util::human_bytes(saved)).cyan().bold(),
+            );
+        }
+        if del_errs > 0 {
+            println!(
+                "  {} {} original{} could not be deleted (check permissions)",
+                style("\u{2503}").dim(),
+                style(del_errs).yellow(),
+                if del_errs == 1 { "" } else { "s" },
+            );
+        }
+        if ok > 1 {
+            println!(
+                "  {} Compression   best: {:.1}%   worst: {:.1}%",
+                style("┃").dim(),
+                best as f64 / 100.0,
+                worst as f64 / 100.0,
+            );
+        }
+        if job.media_type == MediaType::Video {
+            println!(
+                "  {} Finished in {:.1}s (processed sequentially)",
+                style("┃").dim(),
+                elapsed.as_secs_f64(),
+            );
         } else {
-            style(errs).green().bold()
-        },
-    );
-    if saved > 0 {
-        println!(
-            "  {} {} saved",
-            style("┃").dim(),
-            style(util::human_bytes(saved)).cyan().bold(),
-        );
-    }
-    if del_errs > 0 {
-        println!(
-            "  {} {} original{} could not be deleted (check permissions)",
-            style("\u{2503}").dim(),
-            style(del_errs).yellow(),
-            if del_errs == 1 { "" } else { "s" },
-        );
-    }
-    if ok > 1 {
-        println!(
-            "  {} Compression   best: {:.1}%   worst: {:.1}%",
-            style("┃").dim(),
-            best as f64 / 100.0,
-            worst as f64 / 100.0,
-        );
-    }
-    if job.media_type == MediaType::Video {
-        println!(
-            "  {} Finished in {:.1}s (processed sequentially)",
-            style("┃").dim(),
-            elapsed.as_secs_f64(),
-        );
-    } else {
-        println!(
-            "  {} Finished in {:.1}s using {} parallel thread{}",
-            style("┃").dim(),
-            elapsed.as_secs_f64(),
-            actual_threads,
-            if actual_threads == 1 { "" } else { "s" },
-        );
-    }
-    println!("  {}", style("─".repeat(50)).dim());
+            println!(
+                "  {} Finished in {:.1}s using {} parallel thread{}",
+                style("┃").dim(),
+                elapsed.as_secs_f64(),
+                actual_threads,
+                if actual_threads == 1 { "" } else { "s" },
+            );
+        }
+        println!("  {}", style("─".repeat(50)).dim());
     }
 
     crate::util::log_event(
@@ -795,7 +795,10 @@ pub fn restore_last_session() -> Result<()> {
     for entry in record.entries.iter().rev() {
         // If the original was moved to backup, never delete the conversion
         // unless we can also recover that original.
-        if entry.backup_path.as_ref().is_some_and(|backup| !backup.exists())
+        if entry
+            .backup_path
+            .as_ref()
+            .is_some_and(|backup| !backup.exists())
             && !entry.original_path.exists()
         {
             failures += 1;
@@ -1087,7 +1090,9 @@ fn save_opt_cache(cache: &HashMap<PathBuf, CacheEntry>) {
 
 /// Normalize the extension aliases used by input format selection.
 fn matches_format(path: &Path, input: &str) -> bool {
-    let Some(ext) = path.extension() else { return false };
+    let Some(ext) = path.extension() else {
+        return false;
+    };
     let ext = ext.to_string_lossy().to_ascii_lowercase();
     ext == input
         || (input == "jpeg" && ext == "jpg")
@@ -1146,9 +1151,7 @@ mod tests {
     #[test]
     fn output_reservations_prevent_parallel_collisions() {
         let claimed = Mutex::new(HashSet::new());
-        let dir = std::env::temp_dir().join(format!(
-            "rc-output-reserve-{}", std::process::id()
-        ));
+        let dir = std::env::temp_dir().join(format!("rc-output-reserve-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let desired = dir.join("a.avif");
         let input_a = dir.join("a.jpg");
@@ -1160,7 +1163,8 @@ mod tests {
             false,
             crate::config::ConflictStrategy::Overwrite,
             &claimed,
-        ).unwrap();
+        )
+        .unwrap();
         let second = reserve_output(
             desired.clone(),
             &input_b,
@@ -1168,7 +1172,8 @@ mod tests {
             false,
             crate::config::ConflictStrategy::Overwrite,
             &claimed,
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(first, desired);
         assert_eq!(second, dir.join("a.1.avif"));
         std::fs::remove_dir_all(dir).unwrap();
@@ -1176,9 +1181,7 @@ mod tests {
 
     #[test]
     fn scanned_formats_ignore_existing_output_subtrees() {
-        let dir = std::env::temp_dir().join(format!(
-            "rc-scan-exclude-{}", std::process::id()
-        ));
+        let dir = std::env::temp_dir().join(format!("rc-scan-exclude-{}", std::process::id()));
         let output = dir.join("converted");
         std::fs::create_dir_all(&output).unwrap();
         std::fs::write(dir.join("a.jpg"), b"x").unwrap();
