@@ -410,29 +410,32 @@ fn run_noninteractive(cli: &Cli) -> Result<()> {
             deps::check(formats::MediaType::Video)?;
         }
         for input_fmt in &applicable {
-            let summary = processor::run_indexed(&processor::Job {
-                folder: &folder,
-                media_type: formats::MediaType::Video,
-                input_fmt,
-                output_fmt: "MKV",
-                recursive,
-                delete_originals: delete,
-                force_recheck: cli.force_recheck,
-                dry_run: cli.dry_run,
-                threads,
-                output_subfolder: cli.output_subfolder.as_deref(),
-                min_file_size: min_size,
-                max_file_size: max_size,
-                conflict_strategy: conflict,
-                normalize_audio: false,
-                quality,
-                keep_metadata: true,
-                video_scale: processor::VideoScale::AutoTarget {
-                    target_height,
-                    preset,
+            let summary = processor::run_indexed(
+                &processor::Job {
+                    folder: &folder,
+                    media_type: formats::MediaType::Video,
+                    input_fmt,
+                    output_fmt: "MKV",
+                    recursive,
+                    delete_originals: delete,
+                    force_recheck: cli.force_recheck,
+                    dry_run: cli.dry_run,
+                    threads,
+                    output_subfolder: cli.output_subfolder.as_deref(),
+                    min_file_size: min_size,
+                    max_file_size: max_size,
+                    conflict_strategy: conflict,
+                    normalize_audio: false,
+                    quality,
+                    keep_metadata: true,
+                    video_scale: processor::VideoScale::AutoTarget {
+                        target_height,
+                        preset,
+                    },
+                    image_scale: processor::ImageScale::Original,
                 },
-                image_scale: processor::ImageScale::Original,
-            }, &discovered)?;
+                &discovered,
+            )?;
             summaries.push(summary);
         }
     } else {
@@ -461,26 +464,29 @@ fn run_noninteractive(cli: &Cli) -> Result<()> {
             }
         }
         for &(mt, input_fmt, output_fmt) in &applicable {
-            let summary = processor::run_indexed(&processor::Job {
-                folder: &folder,
-                media_type: mt,
-                input_fmt,
-                output_fmt,
-                recursive,
-                delete_originals: delete,
-                force_recheck: cli.force_recheck,
-                dry_run: cli.dry_run,
-                threads,
-                output_subfolder: cli.output_subfolder.as_deref(),
-                min_file_size: min_size,
-                max_file_size: max_size,
-                conflict_strategy: conflict,
-                normalize_audio: false,
-                quality,
-                keep_metadata: true,
-                video_scale: processor::VideoScale::Original,
-                image_scale: processor::ImageScale::Original,
-            }, &discovered)?;
+            let summary = processor::run_indexed(
+                &processor::Job {
+                    folder: &folder,
+                    media_type: mt,
+                    input_fmt,
+                    output_fmt,
+                    recursive,
+                    delete_originals: delete,
+                    force_recheck: cli.force_recheck,
+                    dry_run: cli.dry_run,
+                    threads,
+                    output_subfolder: cli.output_subfolder.as_deref(),
+                    min_file_size: min_size,
+                    max_file_size: max_size,
+                    conflict_strategy: conflict,
+                    normalize_audio: false,
+                    quality,
+                    keep_metadata: true,
+                    video_scale: processor::VideoScale::Original,
+                    image_scale: processor::ImageScale::Original,
+                },
+                &discovered,
+            )?;
             summaries.push(summary);
         }
     }
@@ -993,29 +999,32 @@ fn run_recommended_upscale(cli: &Cli) -> Result<()> {
             style(*input_fmt).white().bold(),
             style("MKV").green().bold(),
         );
-        let summary = processor::run_indexed(&processor::Job {
-            folder: &folder,
-            media_type: formats::MediaType::Video,
-            input_fmt,
-            output_fmt: "MKV",
-            recursive,
-            delete_originals: delete,
-            force_recheck,
-            dry_run: cli.dry_run,
-            threads,
-            output_subfolder: subfolder.as_deref(),
-            min_file_size: cli.min_size.as_deref().and_then(util::parse_size),
-            max_file_size: cli.max_size.as_deref().and_then(util::parse_size),
-            conflict_strategy: cfg.conflict_strategy,
-            normalize_audio: false,
-            quality: crate::processor::Quality::Medium,
-            keep_metadata: true,
-            video_scale: crate::processor::VideoScale::AutoTarget {
-                target_height,
-                preset,
+        let summary = processor::run_indexed(
+            &processor::Job {
+                folder: &folder,
+                media_type: formats::MediaType::Video,
+                input_fmt,
+                output_fmt: "MKV",
+                recursive,
+                delete_originals: delete,
+                force_recheck,
+                dry_run: cli.dry_run,
+                threads,
+                output_subfolder: subfolder.as_deref(),
+                min_file_size: cli.min_size.as_deref().and_then(util::parse_size),
+                max_file_size: cli.max_size.as_deref().and_then(util::parse_size),
+                conflict_strategy: cfg.conflict_strategy,
+                normalize_audio: false,
+                quality: crate::processor::Quality::Medium,
+                keep_metadata: true,
+                video_scale: crate::processor::VideoScale::AutoTarget {
+                    target_height,
+                    preset,
+                },
+                image_scale: crate::processor::ImageScale::Original,
             },
-            image_scale: crate::processor::ImageScale::Original,
-        }, &discovered)?;
+            &discovered,
+        )?;
         summaries.push(summary);
     }
 
@@ -1248,26 +1257,29 @@ fn run_recommended_crunch(cli: &Cli) -> Result<()> {
             style(input_fmt).white().bold(),
             style(output_fmt).green().bold(),
         );
-        let summary = processor::run_indexed(&processor::Job {
-            folder: &folder,
-            media_type,
-            input_fmt,
-            output_fmt,
-            recursive,
-            delete_originals: delete,
-            force_recheck,
-            dry_run: cli.dry_run,
-            threads,
-            output_subfolder: subfolder.as_deref(),
-            min_file_size: None,
-            max_file_size: None,
-            conflict_strategy: cfg.conflict_strategy,
-            normalize_audio: false,
-            quality: crate::processor::Quality::High,
-            keep_metadata: true,
-            video_scale: crate::processor::VideoScale::Original,
-            image_scale: crate::processor::ImageScale::Original,
-        }, &discovered)?;
+        let summary = processor::run_indexed(
+            &processor::Job {
+                folder: &folder,
+                media_type,
+                input_fmt,
+                output_fmt,
+                recursive,
+                delete_originals: delete,
+                force_recheck,
+                dry_run: cli.dry_run,
+                threads,
+                output_subfolder: subfolder.as_deref(),
+                min_file_size: None,
+                max_file_size: None,
+                conflict_strategy: cfg.conflict_strategy,
+                normalize_audio: false,
+                quality: crate::processor::Quality::High,
+                keep_metadata: true,
+                video_scale: crate::processor::VideoScale::Original,
+                image_scale: crate::processor::ImageScale::Original,
+            },
+            &discovered,
+        )?;
         summaries.push(summary);
     }
 
