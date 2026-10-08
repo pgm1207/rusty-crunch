@@ -444,6 +444,15 @@ pub fn run(job: &Job) -> Result<ConversionSummary> {
                     pb.set_message(name.to_string());
 
                     let input_size = input_path.metadata().map(|m| m.len()).unwrap_or(0);
+                    let inplace_backup = if same_ext
+                        && final_output_path == input_path
+                        && job.delete_originals
+                    {
+                        let idx = backup_counter.fetch_add(1, Ordering::Relaxed);
+                        Some(history_backup_path(&input_path, session_id, idx))
+                    } else {
+                        None
+                    };
 
                     match converter::convert(
                         &input_path,
@@ -457,6 +466,7 @@ pub fn run(job: &Job) -> Result<ConversionSummary> {
                             keep_metadata: job.keep_metadata,
                             video_scale: job.video_scale,
                             image_scale: job.image_scale,
+                            restore_backup: inplace_backup.as_deref(),
                         },
                     )
                     .await
@@ -503,8 +513,8 @@ pub fn run(job: &Job) -> Result<ConversionSummary> {
                                 }
                             }
 
-                            let mut backup_path: Option<PathBuf> = None;
-                            if job.delete_originals && !same_ext {
+                            let mut backup_path = inplace_backup;
+                            if job.delete_originals && final_output_path != input_path {
                                 let idx = backup_counter.fetch_add(1, Ordering::Relaxed);
                                 match backup_original_for_restore(&input_path, session_id, idx) {
                                     Ok(p) => backup_path = Some(p),
@@ -514,7 +524,7 @@ pub fn run(job: &Job) -> Result<ConversionSummary> {
                                 }
                             }
 
-                            if !same_ext {
+                            if final_output_path != input_path || backup_path.is_some() {
                                 history_entries
                                     .lock()
                                     .unwrap_or_else(|e| e.into_inner())
@@ -764,16 +774,16 @@ fn move_file_cross_fs(src: &Path, dst: &Path) -> Result<()> {
     Ok(())
 }
 
-fn backup_original_for_restore(original: &Path, session_id: u64, idx: usize) -> Result<PathBuf> {
-    let file_name = original
-        .file_name()
-        .unwrap_or_default()
-        .to_string_lossy()
-        .to_string();
-    let dst = history_dir()
+fn history_backup_path(original: &Path, session_id: u64, idx: usize) -> PathBuf {
+    let file_name = original.file_name().unwrap_or_default().to_string_lossy();
+    history_dir()
         .join("backups")
         .join(format!("session_{session_id}"))
-        .join(format!("{idx:06}_{file_name}"));
+        .join(format!("{idx:06}_{file_name}"))
+}
+
+fn backup_original_for_restore(original: &Path, session_id: u64, idx: usize) -> Result<PathBuf> {
+    let dst = history_backup_path(original, session_id, idx);
     move_file_cross_fs(original, &dst)?;
     Ok(dst)
 }
@@ -795,6 +805,14 @@ pub fn restore_last_session() -> Result<()> {
     let mut failures = 0usize;
 
     for entry in record.entries.iter().rev() {
+        // Same-extension in-place conversions replace their original path.
+        // That pathname existing does not prove the original is recoverable.
+        if entry.original_path == entry.converted_path
+            && !entry.backup_path.as_ref().is_some_and(|backup| backup.exists())
+        {
+            failures += 1;
+            continue;
+        }
         // If the original was moved to backup, never delete the conversion
         // unless we can also recover that original.
         if entry
