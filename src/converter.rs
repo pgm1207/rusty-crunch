@@ -49,18 +49,14 @@ pub struct ConversionOptions<'a> {
 
 /// Create a unique staging directory *beside* the output. Publishing is then a
 /// same-filesystem rename, including when the source lives on another volume.
-static STAGING_SEQUENCE: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(0);
+static STAGING_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 fn staging_dir(output: &Path) -> Result<std::path::PathBuf> {
     let parent = output.parent().context("Output has no parent directory")?;
     std::fs::create_dir_all(parent)?;
     for _ in 0..128 {
         let id = STAGING_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let dir = parent.join(format!(
-            ".rusty-crunch-stage-{}-{id}",
-            std::process::id()
-        ));
+        let dir = parent.join(format!(".rusty-crunch-stage-{}-{id}", std::process::id()));
         match std::fs::create_dir(&dir) {
             Ok(()) => return Ok(dir),
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
@@ -79,9 +75,8 @@ fn publish_staged(staged: &Path, destination: &Path) -> Result<()> {
         .join("previous-output");
     let had_destination = destination.symlink_metadata().is_ok();
     if had_destination {
-        std::fs::rename(destination, &backup).with_context(|| {
-            format!("Could not preserve existing {}", destination.display())
-        })?;
+        std::fs::rename(destination, &backup)
+            .with_context(|| format!("Could not preserve existing {}", destination.display()))?;
     }
 
     if let Err(error) = std::fs::rename(staged, destination) {
@@ -99,9 +94,13 @@ fn publish_staged(staged: &Path, destination: &Path) -> Result<()> {
     if had_destination {
         // A cleanup failure must not turn a successful conversion into an error.
         if let Err(e) = std::fs::remove_file(&backup) {
-            crate::util::log_event("WARN", &format!(
-                "Could not clean up previous output {}: {e}", backup.display()
-            ));
+            crate::util::log_event(
+                "WARN",
+                &format!(
+                    "Could not clean up previous output {}: {e}",
+                    backup.display()
+                ),
+            );
         }
     }
     Ok(())
@@ -122,14 +121,17 @@ pub async fn convert(input: &Path, output: &Path, opts: ConversionOptions<'_>) -
     }
 
     // Some tools exit with status 0 yet produce nothing (or an empty file).
-    let metadata = staged.metadata().with_context(|| {
-        format!("Converter did not produce {}", staged.display())
-    });
+    let metadata = staged
+        .metadata()
+        .with_context(|| format!("Converter did not produce {}", staged.display()));
     match metadata {
         Ok(info) if info.is_file() && info.len() > 0 => {}
         Ok(_) => {
             let _ = std::fs::remove_dir_all(&stage_dir);
-            bail!("Converter produced an empty or invalid output for {}", input.display());
+            bail!(
+                "Converter produced an empty or invalid output for {}",
+                input.display()
+            );
         }
         Err(error) => {
             let _ = std::fs::remove_dir_all(&stage_dir);
@@ -141,9 +143,13 @@ pub async fn convert(input: &Path, output: &Path, opts: ConversionOptions<'_>) -
     // particularly if the rollback itself also fails.
     publish_staged(&staged, output)?;
     if let Err(e) = std::fs::remove_dir_all(&stage_dir) {
-        crate::util::log_event("WARN", &format!(
-            "Could not clean up staging directory {}: {e}", stage_dir.display()
-        ));
+        crate::util::log_event(
+            "WARN",
+            &format!(
+                "Could not clean up staging directory {}: {e}",
+                stage_dir.display()
+            ),
+        );
     }
     Ok(())
 }
@@ -728,7 +734,7 @@ async fn optimize_pdf(
             let _ = std::fs::remove_file(&tmp_in);
             let _ = std::fs::remove_file(&tmp_out);
             bail!("Ghostscript timed out after 10 minutes")
-        },
+        }
     };
 
     // Always clean up the temp input file
