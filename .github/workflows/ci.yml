@@ -41,6 +41,26 @@ jobs:
       - name: Release build
         run: cargo build --release --locked
 
+      - name: End-to-end FFmpeg smoke test
+        shell: bash
+        run: |
+          if ! command -v ffmpeg >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y ffmpeg
+          fi
+          INPUT_DIR="$RUNNER_TEMP/rusty-crunch-smoke"
+          mkdir -p "$INPUT_DIR"
+          ffmpeg -nostdin -hide_banner -loglevel error -f lavfi \
+            -i "sine=frequency=1000:sample_rate=44100:duration=0.4" \
+            -c:a pcm_s16le "$INPUT_DIR/sample.wav"
+          target/release/rusty-crunch --yes --no-recursive --keep-originals \
+            --output-subfolder encoded "$INPUT_DIR"
+          test -s "$INPUT_DIR/encoded/sample.flac"
+          test -s "$INPUT_DIR/sample.wav"
+          ffprobe -v error -show_entries stream=codec_name \
+            -of default=noprint_wrappers=1:nokey=1 "$INPUT_DIR/encoded/sample.flac" \
+            | grep -qx flac
+
   cross-platform:
     name: Compile & test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
