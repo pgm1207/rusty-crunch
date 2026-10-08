@@ -157,7 +157,7 @@ Non-interactive `--json` prints an array of conversion summaries. The relevant p
 
 The converter writes a complete result into a temporary sibling directory, checks that it exists and is not empty, then publishes it. The previous destination is retained through the publication step so a failed replacement can be rolled back. Staging needs **temporary free space on the output filesystem**, potentially as large as the encoded result. Files left in a hidden `.rusty-crunch-stage-*` directory after a rare publication/rollback failure should be inspected manually before cleanup.
 
-`Restore` refuses to remove files that have changed since conversion and conservatively refuses to delete unverified outputs from older history records. It does **not** restore an older destination overwritten using `--conflict overwrite`; keep external backups of important outputs. The undo system currently records conversions to new output paths, not in-place same-extension rewrites. Always test irreversible workflows on disposable samples before using `--delete-originals`.
+`Restore` refuses to remove files that have changed since conversion and conservatively refuses to delete unverified outputs from older history records. It does **not** restore an older destination overwritten using `--conflict overwrite`; keep external backups of important outputs. In-place same-extension rewrites done with `--delete-originals` are also backed up and can be restored. Without that flag, same-extension jobs write a renamed output instead of changing the original. The agent's automatic conversions do not create undo history. Always test irreversible workflows on disposable samples before using `--delete-originals`.
 
 ### Recommended Crunch
 
